@@ -1,25 +1,25 @@
 const { Telegraf, Markup } = require('telegraf');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = 1379973354;  // သင့် ID
+const ADMIN_ID = 1379973354; // Replace with your Telegram User ID
+
+// Temporary storage
+const pendingOrders = new Map(); // orderId -> { userId, productName, price, username }
+const awaitingServiceInfo = new Map(); // adminChatId -> { orderId, userId }
+
+let orderCounter = 1000;
 
 console.log('========================================');
 console.log('🤖 Digital Hub Bot Starting...');
 console.log('========================================');
-
-if (!BOT_TOKEN) {
-    console.error('❌ ERROR: BOT_TOKEN not set');
-    process.exit(1);
-}
-
-console.log('✅ Token validated');
+console.log('✅ Bot initialized');
 console.log(`👑 Admin ID: ${ADMIN_ID}`);
 console.log('========================================');
 
 const bot = new Telegraf(BOT_TOKEN);
 
 // ============================================
-// Main Menu
+// Main Menu Keyboard
 // ============================================
 const mainMenu = Markup.inlineKeyboard([
     [Markup.button.callback('🛍️ Products', 'menu_products')],
@@ -38,12 +38,28 @@ const productsKeyboard = Markup.inlineKeyboard([
     [Markup.button.callback('◀️ Back to Main', 'back_main')]
 ]);
 
-// Temporary storage
-const userSelections = new Map();
-let orderCounter = 1000;
+// ============================================
+// Helper: Send Service Info to User
+// ============================================
+async function sendServiceInfoToUser(userId, orderId, productName, serviceDetails) {
+    const message = 
+        `<b>✅ YOUR ORDER IS READY! 🎉</b>\n\n` +
+        `<b>Order ID:</b> #${orderId}\n` +
+        `<b>Product:</b> ${productName}\n\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n` +
+        `<b>🔑 SERVICE INFORMATION</b>\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
+        `${serviceDetails}\n\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
+        `<i>📌 Please save this information.</i>\n` +
+        `<i>🙏 Thank you for shopping with Digital Hub!</i>\n\n` +
+        `<code>Need help? Contact @will815</code>`;
+    
+    await bot.telegram.sendMessage(userId, message, { parse_mode: 'HTML' });
+}
 
 // ============================================
-// Helper: Send Order to Admin (HTML format)
+// Helper: Send Order to Admin
 // ============================================
 async function sendOrderToAdmin(photoFileId, orderId, username, userId, productName, price) {
     const adminKeyboard = Markup.inlineKeyboard([
@@ -53,11 +69,12 @@ async function sendOrderToAdmin(photoFileId, orderId, username, userId, productN
     
     const caption = 
         `<b>🆕 NEW ORDER #${orderId}</b>\n\n` +
-        `<b>👤 User:</b> @${username || 'N/A'} (${userId})\n` +
+        `<b>👤 Customer:</b> @${username || 'N/A'} (${userId})\n` +
         `<b>🛍️ Product:</b> ${productName}\n` +
         `<b>💰 Amount:</b> ${price.toLocaleString()} MMK\n` +
         `<b>📅 Date:</b> ${new Date().toLocaleString()}\n\n` +
-        `<i>📸 Payment Proof attached below.</i>`;
+        `<i>📸 Payment proof attached below.</i>\n\n` +
+        `<b>👇 Click Confirm after sending service info</b>`;
     
     await bot.telegram.sendPhoto(ADMIN_ID, photoFileId, {
         caption: caption,
@@ -67,14 +84,17 @@ async function sendOrderToAdmin(photoFileId, orderId, username, userId, productN
 }
 
 // ============================================
-// /start
+// /start Command
 // ============================================
 bot.start((ctx) => {
-    console.log(`✅ User ${ctx.from.id} (${ctx.from.username}) started`);
+    const userName = ctx.from.first_name || ctx.from.username || 'User';
+    console.log(`✅ User ${ctx.from.id} (@${ctx.from.username}) started the bot`);
+    
     ctx.reply(
         `🎉 <b>Welcome to Digital Hub Store!</b>\n\n` +
-        `👋 Hello ${ctx.from.first_name}!\n\n` +
-        `အောက်ပါ Button များထဲက ရွေးချယ်နိုင်ပါတယ်။`,
+        `👋 Hello <b>${userName}</b>!\n\n` +
+        `We offer premium digital products at the best prices.\n\n` +
+        `👇 <b>Please select an option below:</b>`,
         { parse_mode: 'HTML', ...mainMenu }
     );
 });
@@ -85,7 +105,8 @@ bot.start((ctx) => {
 bot.action('menu_products', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '🛍️ <b>Products</b>\n\nအောက်ပါပစ္စည်းများထဲက ရွေးချယ်ပါ။',
+        '<b>🛍️ OUR PRODUCTS</b>\n\n' +
+        'Please select a product from below:',
         { parse_mode: 'HTML', ...productsKeyboard }
     );
 });
@@ -93,12 +114,13 @@ bot.action('menu_products', async (ctx) => {
 bot.action('menu_discounts', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '<b>🔥 Discounts</b>\n\n' +
-        '• ChatGPT Plus: 120,000 → 64,800 MMK (-46%)\n' +
-        '• Canva Pro: 8,000 → 6,000 MMK (-25%)\n' +
-        '• Express VPN: 5,000 → 3,500 MMK (-30%)\n' +
-        '• Adobe Premiere Pro: 15,000 → 9,000 MMK (-40%)\n' +
-        '• YouTube Premium: 6,000 → 4,800 MMK (-20%)',
+        '<b>🔥 CURRENT DISCOUNTS</b>\n\n' +
+        '• <b>ChatGPT Plus</b>: 120,000 → 64,800 MMK (-46%)\n' +
+        '• <b>Canva Pro</b>: 8,000 → 6,000 MMK (-25%)\n' +
+        '• <b>Express VPN</b>: 5,000 → 3,500 MMK (-30%)\n' +
+        '• <b>Adobe Premiere Pro</b>: 15,000 → 9,000 MMK (-40%)\n' +
+        '• <b>YouTube Premium</b>: 6,000 → 4,800 MMK (-20%)\n\n' +
+        'Click <b>Products</b> to purchase.',
         { parse_mode: 'HTML', ...productsKeyboard }
     );
 });
@@ -106,8 +128,13 @@ bot.action('menu_discounts', async (ctx) => {
 bot.action('menu_categories', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '<b>📁 Categories</b>\n\n' +
-        '• AI Tools\n• Photo Editing\n• Video Editing\n• VPNs\n• Others',
+        '<b>📁 CATEGORIES</b>\n\n' +
+        '• 🤖 AI Tools\n' +
+        '• 📸 Photo Editing\n' +
+        '• 🎬 Video Editing\n' +
+        '• 🔒 VPNs\n' +
+        '• 📺 Others\n\n' +
+        'Click <b>Products</b> to view all.',
         { parse_mode: 'HTML', ...productsKeyboard }
     );
 });
@@ -115,9 +142,11 @@ bot.action('menu_categories', async (ctx) => {
 bot.action('menu_promo', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '<b>🎫 Promo Code</b>\n\n' +
-        'Promo Code ရှိရင် /apply နဲ့ ထည့်ပါ။\n\n' +
-        'ဥပမာ: /apply HUBBY10',
+        '<b>🎫 PROMO CODE</b>\n\n' +
+        'If you have a promo code, please type:\n\n' +
+        '<code>/apply YOUR_CODE</code>\n\n' +
+        'Example: <code>/apply HUBBY10</code>\n\n' +
+        '✅ Get discount on your first purchase!',
         { parse_mode: 'HTML' }
     );
 });
@@ -125,11 +154,12 @@ bot.action('menu_promo', async (ctx) => {
 bot.action('menu_contact', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '<b>📞 Contact</b>\n\n' +
-        'Telegram: @will815\n\n' +
-        '<b>💳 Payment:</b>\n' +
-        '• KBZ Bank: 0987654321\n' +
-        '• WavePay: 09798268154',
+        '<b>📞 CONTACT & SUPPORT</b>\n\n' +
+        '📱 <b>Telegram Support:</b> @will815\n\n' +
+        '<b>💳 PAYMENT METHODS</b>\n' +
+        '• KBZ Bank: 0987654321 (William)\n' +
+        '• WavePay: 09798268154\n\n' +
+        '<i>After payment, click Products to place your order.</i>',
         { parse_mode: 'HTML' }
     );
 });
@@ -137,7 +167,8 @@ bot.action('menu_contact', async (ctx) => {
 bot.action('back_main', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '🏠 <b>Main Menu</b>',
+        '<b>🏠 MAIN MENU</b>\n\n' +
+        'Please select an option below:',
         { parse_mode: 'HTML', ...mainMenu }
     );
 });
@@ -160,49 +191,80 @@ bot.action(/buy_(\d+)/, async (ctx) => {
     }
     
     const finalPrice = price - (price * discount / 100);
+    const orderId = ++orderCounter;
     
-    userSelections.set(ctx.from.id, {
-        productId, productName, finalPrice
+    // Store order info
+    pendingOrders.set(orderId, {
+        userId: ctx.from.id,
+        username: ctx.from.username,
+        productName: productName,
+        price: finalPrice,
+        status: 'pending'
     });
     
     const paymentKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('✅ I have paid', 'confirm_payment')],
-        [Markup.button.callback('◀️ Back', 'menu_products')]
+        [Markup.button.callback('✅ I HAVE PAID', 'payment_done')],
+        [Markup.button.callback('◀️ Back to Products', 'menu_products')]
     ]);
     
     await ctx.editMessageText(
-        `<b>🛒 ${productName}</b>\n\n` +
-        `📅 Duration: 1 month\n` +
-        `💰 Price: ${finalPrice.toLocaleString()} MMK\n` +
-        `🏷️ Discount: -${discount}%\n\n` +
-        `<b>💳 Payment:</b>\n` +
-        `• KBZ Bank: 0987654321\n` +
+        `<b>🛒 ORDER SUMMARY</b>\n\n` +
+        `<b>Product:</b> ${productName}\n` +
+        `<b>Duration:</b> 1 month\n` +
+        `<b>Original Price:</b> ${price.toLocaleString()} MMK\n` +
+        `<b>Discount:</b> -${discount}%\n` +
+        `<b>Final Price:</b> ${finalPrice.toLocaleString()} MMK\n\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n` +
+        `<b>💳 PAYMENT INSTRUCTIONS</b>\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
+        `Send payment to:\n` +
+        `• KBZ Bank: 0987654321 (William)\n` +
         `• WavePay: 09798268154\n\n` +
-        `✅ ငွေလွှဲပြီးပါက "I have paid" ကိုနှိပ်ပါ။`,
+        `<b>Order ID:</b> #${orderId}\n\n` +
+        `<i>After payment, click "I HAVE PAID" and send your payment proof screenshot.</i>`,
         { parse_mode: 'HTML', ...paymentKeyboard }
     );
 });
 
 // ============================================
-// Confirm Payment
+// Payment Done Handler
 // ============================================
-bot.action('confirm_payment', async (ctx) => {
+bot.action('payment_done', async (ctx) => {
     await ctx.answerCbQuery();
     
-    const selection = userSelections.get(ctx.from.id);
-    if (!selection) {
-        await ctx.reply('❌ Please select a product first: /start');
+    // Find pending order for this user
+    let currentOrder = null;
+    let currentOrderId = null;
+    for (const [orderId, order] of pendingOrders) {
+        if (order.userId === ctx.from.id && order.status === 'pending') {
+            currentOrder = order;
+            currentOrderId = orderId;
+            break;
+        }
+    }
+    
+    if (!currentOrder) {
+        await ctx.reply(
+            '❌ No pending order found.\n\n' +
+            'Please place an order first using the Products menu.',
+            { parse_mode: 'HTML', ...mainMenu }
+        );
         return;
     }
     
-    const orderId = ++orderCounter;
-    userSelections.set(ctx.from.id, { ...selection, orderId, status: 'waiting_proof' });
+    // Update order status
+    pendingOrders.set(currentOrderId, {
+        ...currentOrder,
+        status: 'waiting_proof'
+    });
     
     await ctx.reply(
-        `<b>📸 Please send your payment proof screenshot.</b>\n\n` +
-        `Order ID: #${orderId}\n` +
-        `Product: ${selection.productName}\n` +
-        `Amount: ${selection.finalPrice.toLocaleString()} MMK`,
+        `<b>📸 PLEASE SEND YOUR PAYMENT PROOF</b>\n\n` +
+        `<b>Order ID:</b> #${currentOrderId}\n` +
+        `<b>Product:</b> ${currentOrder.productName}\n` +
+        `<b>Amount:</b> ${currentOrder.price.toLocaleString()} MMK\n\n` +
+        `Please send a screenshot of your payment transaction.\n\n` +
+        `<i>Our admin will verify your payment and deliver your product within 30 minutes.</i>`,
         { parse_mode: 'HTML' }
     );
 });
@@ -211,90 +273,303 @@ bot.action('confirm_payment', async (ctx) => {
 // Handle Photo (Payment Proof)
 // ============================================
 bot.on('photo', async (ctx) => {
-    console.log(`📸 Photo from user: ${ctx.from.id}`);
+    console.log(`📸 Payment proof received from user: ${ctx.from.id}`);
     
-    const selection = userSelections.get(ctx.from.id);
-    if (!selection || selection.status !== 'waiting_proof') {
-        await ctx.reply('❌ Please select a product first: /start');
+    // Find order for this user
+    let currentOrder = null;
+    let currentOrderId = null;
+    for (const [orderId, order] of pendingOrders) {
+        if (order.userId === ctx.from.id && order.status === 'waiting_proof') {
+            currentOrder = order;
+            currentOrderId = orderId;
+            break;
+        }
+    }
+    
+    if (!currentOrder) {
+        await ctx.reply(
+            '❌ No pending payment found.\n\n' +
+            'Please place an order first: /start',
+            { parse_mode: 'HTML' }
+        );
         return;
     }
     
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    const orderId = selection.orderId;
+    
+    // Update order status
+    pendingOrders.set(currentOrderId, {
+        ...currentOrder,
+        status: 'proof_submitted',
+        proofFileId: photo.file_id
+    });
     
     // Send to admin
     await sendOrderToAdmin(
         photo.file_id,
-        orderId,
-        ctx.from.username || ctx.from.first_name,
+        currentOrderId,
+        currentOrder.username,
         ctx.from.id,
-        selection.productName,
-        selection.finalPrice
+        currentOrder.productName,
+        currentOrder.price
     );
-    
-    // Update status
-    userSelections.set(ctx.from.id, { ...selection, status: 'sent' });
     
     await ctx.reply(
-        `✅ <b>Payment Proof Received!</b>\n\n` +
-        `Order ID: #${orderId}\n` +
-        `⏳ Admin ကိုစောင့်ဆိုင်းပေးပါ။`,
+        `<b>✅ PAYMENT PROOF RECEIVED!</b>\n\n` +
+        `<b>Order ID:</b> #${currentOrderId}\n\n` +
+        `⏳ <b>Please wait...</b>\n` +
+        `Our admin is reviewing your payment.\n\n` +
+        `You will receive your product information here within 30 minutes.\n\n` +
+        `<i>Thank you for your patience! 🙏</i>`,
         { parse_mode: 'HTML' }
     );
-    
-    console.log(`📤 Order #${orderId} sent to admin`);
 });
 
 // ============================================
-// Admin Confirm
+// Admin Confirm Handler (First Step)
 // ============================================
 bot.action(/confirm_(\d+)/, async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
-        await ctx.answerCbQuery('Admin only');
+        await ctx.answerCbQuery('⛔ Admin access only');
         return;
     }
     
     const orderId = parseInt(ctx.match[1]);
     await ctx.answerCbQuery();
-    await ctx.editMessageCaption(`✅ <b>ORDER #${orderId} CONFIRMED!</b>`, { parse_mode: 'HTML' });
-});
-
-bot.action(/cancel_(\d+)/, async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) {
-        await ctx.answerCbQuery('Admin only');
+    
+    const order = pendingOrders.get(orderId);
+    if (!order) {
+        await ctx.editMessageCaption('❌ Order not found!', { parse_mode: 'HTML' });
         return;
     }
     
-    const orderId = parseInt(ctx.match[1]);
-    await ctx.answerCbQuery();
-    await ctx.editMessageCaption(`❌ <b>ORDER #${orderId} CANCELLED!</b>`, { parse_mode: 'HTML' });
+    // Store that admin is about to send service info
+    awaitingServiceInfo.set(ADMIN_ID, {
+        orderId: orderId,
+        userId: order.userId
+    });
+    
+    await ctx.editMessageCaption(
+        `<b>✅ ORDER #${orderId} - CONFIRMATION PENDING</b>\n\n` +
+        `<b>Customer:</b> @${order.username || 'N/A'} (${order.userId})\n` +
+        `<b>Product:</b> ${order.productName}\n` +
+        `<b>Amount:</b> ${order.price.toLocaleString()} MMK\n\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n` +
+        `<b>📦 NEXT STEP:</b>\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
+        `Please <b>forward the service information</b> (login, password, link, etc.) to this chat.\n\n` +
+        `The bot will automatically deliver it to the customer.\n\n` +
+        `<i>Forward any message containing the service details → bot sends to customer.</i>`,
+        { parse_mode: 'HTML' }
+    );
 });
 
 // ============================================
-// Promo Code
+// Handle Forwarded Messages (Service Info)
+// ============================================
+bot.on('forward_date', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return;
+    
+    const pending = awaitingServiceInfo.get(ADMIN_ID);
+    if (!pending) return;
+    
+    const { orderId, userId } = pending;
+    const order = pendingOrders.get(orderId);
+    
+    if (!order) {
+        await ctx.reply('❌ Order not found. Please try again.');
+        awaitingServiceInfo.delete(ADMIN_ID);
+        return;
+    }
+    
+    // Get the forwarded message content
+    let serviceDetails = '';
+    
+    if (ctx.message.text) {
+        serviceDetails = ctx.message.text;
+    } else if (ctx.message.caption) {
+        serviceDetails = ctx.message.caption;
+    } else {
+        serviceDetails = '⚠️ No text content. Please send the service info as text.';
+    }
+    
+    // Send service info to customer
+    await sendServiceInfoToUser(userId, orderId, order.productName, serviceDetails);
+    
+    // Update order status
+    pendingOrders.set(orderId, {
+        ...order,
+        status: 'completed',
+        deliveredAt: new Date().toISOString()
+    });
+    
+    // Clear awaiting state
+    awaitingServiceInfo.delete(ADMIN_ID);
+    
+    // Confirm to admin
+    await ctx.reply(
+        `<b>✅ ORDER #${orderId} - COMPLETED!</b>\n\n` +
+        `Service information has been sent to <b>@${order.username || userId}</b>.\n\n` +
+        `📦 <b>Delivery Status:</b> Delivered ✅\n` +
+        `🕐 <b>Time:</b> ${new Date().toLocaleString()}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `<i>The customer has been notified.</i>`,
+        { parse_mode: 'HTML' }
+    );
+});
+
+// ============================================
+// Handle Text Messages as Service Info (Alternative)
+// ============================================
+bot.on('text', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return;
+    
+    const pending = awaitingServiceInfo.get(ADMIN_ID);
+    if (!pending) return;
+    
+    // Ignore commands
+    if (ctx.message.text.startsWith('/')) return;
+    
+    const { orderId, userId } = pending;
+    const order = pendingOrders.get(orderId);
+    
+    if (!order) {
+        await ctx.reply('❌ Order not found.');
+        awaitingServiceInfo.delete(ADMIN_ID);
+        return;
+    }
+    
+    const serviceDetails = ctx.message.text;
+    
+    // Send service info to customer
+    await sendServiceInfoToUser(userId, orderId, order.productName, serviceDetails);
+    
+    pendingOrders.set(orderId, {
+        ...order,
+        status: 'completed',
+        deliveredAt: new Date().toISOString()
+    });
+    
+    awaitingServiceInfo.delete(ADMIN_ID);
+    
+    await ctx.reply(
+        `<b>✅ ORDER #${orderId} - COMPLETED!</b>\n\n` +
+        `Service information has been sent to <b>@${order.username || userId}</b>.\n\n` +
+        `📦 <b>Status:</b> Delivered ✅`,
+        { parse_mode: 'HTML' }
+    );
+});
+
+// ============================================
+// Admin Cancel Handler
+// ============================================
+bot.action(/cancel_(\d+)/, async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+        await ctx.answerCbQuery('⛔ Admin access only');
+        return;
+    }
+    
+    const orderId = parseInt(ctx.match[1]);
+    await ctx.answerCbQuery();
+    
+    const order = pendingOrders.get(orderId);
+    if (!order) {
+        await ctx.editMessageCaption('❌ Order not found!', { parse_mode: 'HTML' });
+        return;
+    }
+    
+    pendingOrders.set(orderId, { ...order, status: 'cancelled' });
+    
+    // Notify customer
+    await bot.telegram.sendMessage(
+        order.userId,
+        `<b>❌ ORDER #${orderId} - CANCELLED</b>\n\n` +
+        `Unfortunately, your order has been cancelled.\n\n` +
+        `Please contact support @will815 for assistance.\n\n` +
+        `<i>You can place a new order anytime.</i>`,
+        { parse_mode: 'HTML', ...mainMenu }
+    );
+    
+    await ctx.editMessageCaption(
+        `<b>❌ ORDER #${orderId} - CANCELLED</b>\n\n` +
+        `Customer has been notified.`,
+        { parse_mode: 'HTML' }
+    );
+});
+
+// ============================================
+// Promo Code Command
 // ============================================
 bot.command('apply', (ctx) => {
     const code = ctx.message.text.split(' ')[1];
+    
     if (!code) {
-        ctx.reply('❌ /apply HUBBY10');
+        ctx.reply(
+            '<b>🎫 PROMO CODE USAGE</b>\n\n' +
+            'Please type: <code>/apply YOUR_CODE</code>\n\n' +
+            'Example: <code>/apply HUBBY10</code>',
+            { parse_mode: 'HTML' }
+        );
         return;
     }
     
-    const validCodes = ['HUBBY10', 'HUBBY20', 'WELCOME', 'FIRSTBUY'];
-    if (validCodes.includes(code.toUpperCase())) {
-        ctx.reply(`✅ Promo Code ${code.toUpperCase()} applied! ${code.toUpperCase() === 'HUBBY20' ? '20%' : '10%'} discount on first purchase.`);
+    const validCodes = {
+        'HUBBY10': 10,
+        'HUBBY20': 20,
+        'WELCOME': 15,
+        'FIRSTBUY': 25
+    };
+    
+    if (validCodes[code.toUpperCase()]) {
+        const discount = validCodes[code.toUpperCase()];
+        ctx.reply(
+            `<b>✅ PROMO CODE APPLIED!</b>\n\n` +
+            `Code: <code>${code.toUpperCase()}</code>\n` +
+            `Discount: ${discount}% OFF on your first purchase!\n\n` +
+            `Click <b>Products</b> to start shopping.`,
+            { parse_mode: 'HTML', ...mainMenu }
+        );
     } else {
-        ctx.reply('❌ Invalid promo code');
+        ctx.reply(
+            `<b>❌ INVALID PROMO CODE</b>\n\n` +
+            `The code <code>${code}</code> is not valid.\n\n` +
+            `Please check and try again.`,
+            { parse_mode: 'HTML' }
+        );
     }
 });
 
 // ============================================
-// Launch
+// Test Command
+// ============================================
+bot.command('test', (ctx) => {
+    ctx.reply('✅ Bot is online and working properly!', { parse_mode: 'HTML' });
+});
+
+// ============================================
+// Unknown Message Handler
+// ============================================
+bot.on('text', (ctx) => {
+    if (ctx.from.id === ADMIN_ID) return;
+    if (ctx.message.text.startsWith('/')) return;
+    
+    ctx.reply(
+        '❓ <b>Command not recognized</b>\n\n' +
+        'Please use the buttons below or type /start',
+        { parse_mode: 'HTML', ...mainMenu }
+    );
+});
+
+// ============================================
+// Launch Bot
 // ============================================
 bot.launch()
     .then(() => {
         console.log('========================================');
-        console.log('✅ BOT IS RUNNING!');
+        console.log('✅ BOT IS RUNNING SUCCESSFULLY!');
+        console.log('========================================');
+        console.log('🤖 Bot: @digitalhub_official_bot');
+        console.log(`👑 Admin ID: ${ADMIN_ID}`);
         console.log('========================================');
     })
     .catch((err) => {
