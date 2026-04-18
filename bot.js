@@ -5,9 +5,6 @@ const { Telegraf, Markup } = require('telegraf');
 // ============================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = 1379973354; // Your Telegram User ID
-const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
-    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
-    : null;
 
 // ============================================
 // DATA STORAGE
@@ -33,7 +30,6 @@ console.log('========================================');
 console.log('🤖 Digital Hub Bot Starting...');
 console.log('========================================');
 console.log(`👑 Admin ID: ${ADMIN_ID}`);
-console.log(`🌐 Webhook URL: ${WEBHOOK_URL || 'Not set'}`);
 console.log('========================================');
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -608,41 +604,20 @@ bot.command('cancel', (ctx) => {
 });
 
 // ============================================
-// LAUNCH BOT (WITH ERROR HANDLING)
+// LAUNCH BOT - Simple Polling Mode
 // ============================================
-async function startBot() {
-    try {
-        // Try webhook mode first if URL is available
-        if (WEBHOOK_URL) {
-            await bot.telegram.deleteWebhook();
-            await bot.telegram.setWebhook(WEBHOOK_URL);
-            console.log(`✅ Webhook set to: ${WEBHOOK_URL}`);
-        }
-        
-        // Start bot
-        await bot.launch();
-        
+console.log('🔄 Starting bot in polling mode...');
+
+bot.launch()
+    .then(() => {
         console.log('========================================');
         console.log('✅ BOT RUNNING SUCCESSFULLY!');
         console.log('========================================');
-        
-    } catch (err) {
+    })
+    .catch((err) => {
         console.error('❌ Launch error:', err.message);
-        
-        // Fallback to polling without webhook
-        console.log('🔄 Retrying with polling mode...');
-        try {
-            await bot.telegram.deleteWebhook();
-            await bot.launch();
-            console.log('✅ Bot running in polling mode');
-        } catch (retryErr) {
-            console.error('❌ Both modes failed:', retryErr.message);
-            process.exit(1);
-        }
-    }
-}
-
-startBot();
+        process.exit(1);
+    });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
