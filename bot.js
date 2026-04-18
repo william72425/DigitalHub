@@ -4,7 +4,10 @@ const { Telegraf, Markup } = require('telegraf');
 // CONFIGURATION
 // ============================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = 1379973354; // Replace with your Telegram User ID
+const ADMIN_ID = 1379973354; // Your Telegram User ID
+const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN 
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
+    : null;
 
 // ============================================
 // DATA STORAGE
@@ -30,6 +33,7 @@ console.log('========================================');
 console.log('🤖 Digital Hub Bot Starting...');
 console.log('========================================');
 console.log(`👑 Admin ID: ${ADMIN_ID}`);
+console.log(`🌐 Webhook URL: ${WEBHOOK_URL || 'Not set'}`);
 console.log('========================================');
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -604,18 +608,41 @@ bot.command('cancel', (ctx) => {
 });
 
 // ============================================
-// LAUNCH BOT
+// LAUNCH BOT (WITH ERROR HANDLING)
 // ============================================
-bot.launch()
-    .then(() => {
+async function startBot() {
+    try {
+        // Try webhook mode first if URL is available
+        if (WEBHOOK_URL) {
+            await bot.telegram.deleteWebhook();
+            await bot.telegram.setWebhook(WEBHOOK_URL);
+            console.log(`✅ Webhook set to: ${WEBHOOK_URL}`);
+        }
+        
+        // Start bot
+        await bot.launch();
+        
         console.log('========================================');
         console.log('✅ BOT RUNNING SUCCESSFULLY!');
         console.log('========================================');
-    })
-    .catch((err) => {
-        console.error('❌ Launch error:', err);
-        process.exit(1);
-    });
+        
+    } catch (err) {
+        console.error('❌ Launch error:', err.message);
+        
+        // Fallback to polling without webhook
+        console.log('🔄 Retrying with polling mode...');
+        try {
+            await bot.telegram.deleteWebhook();
+            await bot.launch();
+            console.log('✅ Bot running in polling mode');
+        } catch (retryErr) {
+            console.error('❌ Both modes failed:', retryErr.message);
+            process.exit(1);
+        }
+    }
+}
+
+startBot();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
