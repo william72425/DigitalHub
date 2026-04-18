@@ -4,7 +4,7 @@ const { Telegraf, Markup } = require('telegraf');
 // CONFIGURATION
 // ============================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = 6928764178;  // ← သင့် Telegram User ID ထည့်ပါ
+const ADMIN_ID = 1379973354;  // ← သင့် Telegram User ID ထည့်ပါ
 
 // Temporary storage (ပိုကောင်းအောင် နောက်မှ Database ထည့်မယ်)
 const pendingOrders = new Map();
