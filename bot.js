@@ -1,4 +1,5 @@
 const { Telegraf, Markup } = require('telegraf');
+const express = require('express');
 
 // ============================================
 // CONFIGURATION
@@ -33,6 +34,8 @@ console.log(`👑 Admin ID: ${ADMIN_ID}`);
 console.log('========================================');
 
 const bot = new Telegraf(BOT_TOKEN);
+const app = express();
+const PORT = process.env.PORT || 3000;
 
 // ============================================
 // KEYBOARDS
@@ -95,8 +98,10 @@ async function sendServiceInfoToUser(userId, orderId, productName, serviceDetail
 }
 
 // ============================================
-// START COMMAND
+// BOT COMMANDS & ACTIONS
 // ============================================
+
+// Start Command
 bot.start(async (ctx) => {
     const userId = ctx.from.id;
     const userName = ctx.from.first_name || ctx.from.username || 'User';
@@ -113,9 +118,7 @@ bot.start(async (ctx) => {
     );
 });
 
-// ============================================
-// MENU HANDLERS
-// ============================================
+// Menu Actions
 bot.action('menu_products', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
@@ -166,9 +169,7 @@ bot.action('back_main', async (ctx) => {
     await ctx.editMessageText('<b>🏠 MAIN MENU</b>', { parse_mode: 'HTML', ...mainMenu });
 });
 
-// ============================================
-// PURCHASE HANDLERS
-// ============================================
+// Purchase Handlers
 bot.action(/buy_(\d+)/, async (ctx) => {
     const productId = parseInt(ctx.match[1]);
     await ctx.answerCbQuery();
@@ -239,9 +240,7 @@ bot.action('payment_done', async (ctx) => {
     );
 });
 
-// ============================================
-// PAYMENT PROOF HANDLER
-// ============================================
+// Payment Proof Handler
 bot.on('photo', async (ctx) => {
     let currentOrder = null;
     let currentOrderId = null;
@@ -276,9 +275,7 @@ bot.on('photo', async (ctx) => {
     );
 });
 
-// ============================================
-// ADMIN CONFIRM HANDLER
-// ============================================
+// Admin Confirm Handler
 bot.action(/confirm_(\d+)/, async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
         await ctx.answerCbQuery('Admin only');
@@ -311,9 +308,7 @@ bot.action(/confirm_(\d+)/, async (ctx) => {
     );
 });
 
-// ============================================
-// ADMIN SERVICE INFO HANDLER
-// ============================================
+// Admin Service Info Handler
 bot.on('text', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     if (!awaitingServiceInfo) return;
@@ -344,9 +339,7 @@ bot.on('text', async (ctx) => {
     activeProductName = null;
 });
 
-// ============================================
-// ADMIN CANCEL HANDLER
-// ============================================
+// Admin Cancel Handler
 bot.action(/cancel_(\d+)/, async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
         await ctx.answerCbQuery('Admin only');
@@ -371,9 +364,13 @@ bot.action(/cancel_(\d+)/, async (ctx) => {
 });
 
 // ============================================
-// ADMIN STATS COMMAND
+// ADMIN COMMANDS
 // ============================================
+
+// Stats Command
 bot.command('stats', (ctx) => {
+    console.log(`📊 Stats command from ${ctx.from.id}`);
+    
     if (ctx.from.id !== ADMIN_ID) {
         ctx.reply('⛔ Admin only');
         return;
@@ -393,10 +390,16 @@ bot.command('stats', (ctx) => {
     );
 });
 
-// ============================================
-// ADMIN BROADCAST COMMAND
-// ============================================
+// Test Command
+bot.command('test', (ctx) => {
+    console.log(`🧪 Test command from ${ctx.from.id}`);
+    ctx.reply('✅ Bot is working! Send /stats for more info.');
+});
+
+// Broadcast Command
 bot.command('broadcast', (ctx) => {
+    console.log(`📢 Broadcast command from ${ctx.from.id}`);
+    
     if (ctx.from.id !== ADMIN_ID) {
         ctx.reply('⛔ Admin only');
         return;
@@ -414,6 +417,7 @@ bot.command('broadcast', (ctx) => {
     );
 });
 
+// Broadcast Actions
 bot.action('broadcast_all', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
         await ctx.answerCbQuery('Admin only');
@@ -463,6 +467,7 @@ bot.action('broadcast_cancel', async (ctx) => {
     await ctx.editMessageText(`<b>❌ Broadcast cancelled</b>`, { parse_mode: 'HTML' });
 });
 
+// Broadcast Message Handler
 bot.on('text', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     if (!awaitingBroadcast) return;
@@ -566,9 +571,17 @@ bot.action('broadcast_cancel_confirm', async (ctx) => {
     await ctx.editMessageText(`<b>❌ Broadcast cancelled</b>`, { parse_mode: 'HTML' });
 });
 
-// ============================================
-// PROMO CODE COMMAND
-// ============================================
+// Cancel Command
+bot.command('cancel', (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return;
+    if (awaitingBroadcast) {
+        awaitingBroadcast = false;
+        broadcastTarget = null;
+        ctx.reply('❌ Broadcast cancelled');
+    }
+});
+
+// Promo Code Command
 bot.command('apply', (ctx) => {
     const code = ctx.message.text.split(' ')[1];
     if (!code) {
@@ -585,39 +598,52 @@ bot.command('apply', (ctx) => {
 });
 
 // ============================================
-// TEST COMMAND
+// EXPRESS SERVER (Keeps bot alive on Railway)
 // ============================================
-bot.command('test', (ctx) => {
-    ctx.reply('✅ Bot is working!');
+app.get('/', (req, res) => {
+    res.send('🤖 Digital Hub Bot is running!');
+});
+
+app.listen(PORT, () => {
+    console.log(`🌐 Web server running on port ${PORT}`);
 });
 
 // ============================================
-// CANCEL BROADCAST COMMAND
+// LAUNCH BOT
 // ============================================
-bot.command('cancel', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    if (awaitingBroadcast) {
-        awaitingBroadcast = false;
-        broadcastTarget = null;
-        ctx.reply('❌ Broadcast cancelled');
-    }
-});
-
-// ============================================
-// LAUNCH BOT - Simple Polling Mode
-// ============================================
-console.log('🔄 Starting bot in polling mode...');
-
-bot.launch()
-    .then(() => {
+async function startBot() {
+    try {
+        // Delete any existing webhook
+        await bot.telegram.deleteWebhook();
+        console.log('✅ Webhook deleted');
+        
+        // Start bot with polling
+        await bot.launch();
+        
         console.log('========================================');
         console.log('✅ BOT RUNNING SUCCESSFULLY!');
         console.log('========================================');
-    })
-    .catch((err) => {
+        console.log(`🤖 Bot: @digitalhub_official_bot`);
+        console.log(`👑 Admin ID: ${ADMIN_ID}`);
+        console.log(`🌐 Web server: http://localhost:${PORT}`);
+        console.log('========================================');
+        
+    } catch (err) {
         console.error('❌ Launch error:', err.message);
         process.exit(1);
-    });
+    }
+}
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+startBot();
+
+// Graceful stop
+process.once('SIGINT', () => {
+    console.log('🛑 Shutting down...');
+    bot.stop('SIGINT');
+    process.exit(0);
+});
+process.once('SIGTERM', () => {
+    console.log('🛑 Shutting down...');
+    bot.stop('SIGTERM');
+    process.exit(0);
+});
