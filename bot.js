@@ -7,66 +7,32 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = 1379973354; // Replace with your Telegram User ID
 
 // ============================================
-// DATA STORAGE (in-memory, resets on restart)
+// DATA STORAGE
 // ============================================
-const pendingOrders = new Map();     // orderId -> order details
-const users = new Set();             // All users who started the bot
-const buyers = new Set();            // Users who completed a purchase
+const pendingOrders = new Map();
+const users = new Set();
+const buyers = new Set();
 let orderCounter = 1000;
 
 // Broadcast state
-let broadcastTarget = null;   // 'all' or 'buyers'
+let broadcastTarget = null;
 let broadcastMessage = null;
 let broadcastPhoto = null;
 let awaitingBroadcast = false;
 
-// Service info awaiting state
-const awaitingServiceInfo = new Map(); // adminChatId -> { orderId, userId }
+// Service info state
+let activeOrderId = null;
+let activeUserId = null;
+let activeProductName = null;
+let awaitingServiceInfo = false;
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
+console.log('========================================');
+console.log('🤖 Digital Hub Bot Starting...');
+console.log('========================================');
+console.log(`👑 Admin ID: ${ADMIN_ID}`);
+console.log('========================================');
 
-// Send order notification to admin
-async function sendOrderToAdmin(photoFileId, orderId, username, userId, productName, price) {
-    const adminKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Confirm Order', `confirm_${orderId}`)],
-        [Markup.button.callback('❌ Cancel Order', `cancel_${orderId}`)]
-    ]);
-    
-    const caption = 
-        `<b>🆕 NEW ORDER #${orderId}</b>\n\n` +
-        `<b>👤 Customer:</b> @${username || 'N/A'} (${userId})\n` +
-        `<b>🛍️ Product:</b> ${productName}\n` +
-        `<b>💰 Amount:</b> ${price.toLocaleString()} MMK\n` +
-        `<b>📅 Date:</b> ${new Date().toLocaleString()}\n\n` +
-        `<i>📸 Payment proof attached below.</i>\n\n` +
-        `<b>👇 Click Confirm after sending service info</b>`;
-    
-    await bot.telegram.sendPhoto(ADMIN_ID, photoFileId, {
-        caption: caption,
-        parse_mode: 'HTML',
-        ...adminKeyboard
-    });
-}
-
-// Send service information to customer
-async function sendServiceInfoToUser(userId, orderId, productName, serviceDetails) {
-    const message = 
-        `<b>✅ YOUR ORDER IS READY! 🎉</b>\n\n` +
-        `<b>Order ID:</b> #${orderId}\n` +
-        `<b>Product:</b> ${productName}\n\n` +
-        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n` +
-        `<b>🔑 SERVICE INFORMATION</b>\n` +
-        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
-        `${serviceDetails}\n\n` +
-        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
-        `<i>📌 Please save this information.</i>\n` +
-        `<i>🙏 Thank you for shopping with Digital Hub!</i>\n\n` +
-        `<code>Need help? Contact @will815</code>`;
-    
-    await bot.telegram.sendMessage(userId, message, { parse_mode: 'HTML' });
-}
+const bot = new Telegraf(BOT_TOKEN);
 
 // ============================================
 // KEYBOARDS
@@ -89,35 +55,56 @@ const productsKeyboard = Markup.inlineKeyboard([
 ]);
 
 // ============================================
-// BOT INITIALIZATION
+// HELPER FUNCTIONS
 // ============================================
-console.log('========================================');
-console.log('🤖 Digital Hub Bot Starting...');
-console.log('========================================');
-
-if (!BOT_TOKEN) {
-    console.error('❌ ERROR: BOT_TOKEN not set');
-    process.exit(1);
+async function sendOrderToAdmin(photoFileId, orderId, username, userId, productName, price) {
+    const adminKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('✅ Confirm Order', `confirm_${orderId}`)],
+        [Markup.button.callback('❌ Cancel Order', `cancel_${orderId}`)]
+    ]);
+    
+    const caption = 
+        `<b>🆕 NEW ORDER #${orderId}</b>\n\n` +
+        `<b>Customer:</b> @${username || 'N/A'} (${userId})\n` +
+        `<b>Product:</b> ${productName}\n` +
+        `<b>Amount:</b> ${price.toLocaleString()} MMK\n` +
+        `<b>Date:</b> ${new Date().toLocaleString()}\n\n` +
+        `<i>Payment proof attached.</i>`;
+    
+    await bot.telegram.sendPhoto(ADMIN_ID, photoFileId, {
+        caption: caption,
+        parse_mode: 'HTML',
+        ...adminKeyboard
+    });
 }
 
-console.log('✅ Token validated');
-console.log(`👑 Admin ID: ${ADMIN_ID}`);
-console.log('========================================');
-
-const bot = new Telegraf(BOT_TOKEN);
+async function sendServiceInfoToUser(userId, orderId, productName, serviceDetails) {
+    const message = 
+        `<b>✅ YOUR ORDER IS READY!</b>\n\n` +
+        `<b>Order ID:</b> #${orderId}\n` +
+        `<b>Product:</b> ${productName}\n\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n` +
+        `<b>🔑 SERVICE INFORMATION</b>\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
+        `${serviceDetails}\n\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
+        `<i>Thank you for shopping with Digital Hub!</i>\n\n` +
+        `<code>Need help? Contact @will815</code>`;
+    
+    await bot.telegram.sendMessage(userId, message, { parse_mode: 'HTML' });
+}
 
 // ============================================
 // START COMMAND
 // ============================================
-bot.start((ctx) => {
+bot.start(async (ctx) => {
     const userId = ctx.from.id;
     const userName = ctx.from.first_name || ctx.from.username || 'User';
     
-    // Track user
     users.add(userId);
-    console.log(`✅ New user: ${userId} (@${ctx.from.username}) - Total users: ${users.size}`);
+    console.log(`✅ New user: ${userId} (@${ctx.from.username}) - Total: ${users.size}`);
     
-    ctx.reply(
+    await ctx.reply(
         `🎉 <b>Welcome to Digital Hub Store!</b>\n\n` +
         `👋 Hello <b>${userName}</b>!\n\n` +
         `We offer premium digital products at the best prices.\n\n` +
@@ -132,7 +119,7 @@ bot.start((ctx) => {
 bot.action('menu_products', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '<b>🛍️ OUR PRODUCTS</b>\n\nPlease select a product from below:',
+        '<b>🛍️ OUR PRODUCTS</b>\n\nPlease select a product:',
         { parse_mode: 'HTML', ...productsKeyboard }
     );
 });
@@ -141,12 +128,11 @@ bot.action('menu_discounts', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
         '<b>🔥 CURRENT DISCOUNTS</b>\n\n' +
-        '• <b>ChatGPT Plus</b>: 120,000 → 64,800 MMK (-46%)\n' +
-        '• <b>Canva Pro</b>: 8,000 → 6,000 MMK (-25%)\n' +
-        '• <b>Express VPN</b>: 5,000 → 3,500 MMK (-30%)\n' +
-        '• <b>Adobe Premiere Pro</b>: 15,000 → 9,000 MMK (-40%)\n' +
-        '• <b>YouTube Premium</b>: 6,000 → 4,800 MMK (-20%)\n\n' +
-        'Click <b>Products</b> to purchase.',
+        '• ChatGPT Plus: 64,800 MMK (-46%)\n' +
+        '• Canva Pro: 6,000 MMK (-25%)\n' +
+        '• Express VPN: 3,500 MMK (-30%)\n' +
+        '• Adobe Premiere Pro: 9,000 MMK (-40%)\n' +
+        '• YouTube Premium: 4,800 MMK (-20%)',
         { parse_mode: 'HTML', ...productsKeyboard }
     );
 });
@@ -154,9 +140,7 @@ bot.action('menu_discounts', async (ctx) => {
 bot.action('menu_categories', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '<b>📁 CATEGORIES</b>\n\n' +
-        '• 🤖 AI Tools\n• 📸 Photo Editing\n• 🎬 Video Editing\n• 🔒 VPNs\n• 📺 Others\n\n' +
-        'Click <b>Products</b> to view all.',
+        '<b>📁 CATEGORIES</b>\n\n• AI Tools\n• Photo Editing\n• Video Editing\n• VPNs\n• Others',
         { parse_mode: 'HTML', ...productsKeyboard }
     );
 });
@@ -164,11 +148,7 @@ bot.action('menu_categories', async (ctx) => {
 bot.action('menu_promo', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '<b>🎫 PROMO CODE</b>\n\n' +
-        'If you have a promo code, please type:\n\n' +
-        '<code>/apply YOUR_CODE</code>\n\n' +
-        'Example: <code>/apply HUBBY10</code>\n\n' +
-        '✅ Get discount on your first purchase!',
+        '<b>🎫 PROMO CODE</b>\n\nType: <code>/apply YOUR_CODE</code>\n\nExample: <code>/apply HUBBY10</code>',
         { parse_mode: 'HTML' }
     );
 });
@@ -176,22 +156,14 @@ bot.action('menu_promo', async (ctx) => {
 bot.action('menu_contact', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(
-        '<b>📞 CONTACT & SUPPORT</b>\n\n' +
-        '📱 <b>Telegram Support:</b> @will815\n\n' +
-        '<b>💳 PAYMENT METHODS</b>\n' +
-        '• KBZ Bank: 0987654321 (William)\n' +
-        '• WavePay: 09798268154\n\n' +
-        '<i>After payment, click Products to place your order.</i>',
+        '<b>📞 CONTACT</b>\n\n📱 Telegram: @will815\n\n<b>💳 PAYMENT</b>\n• KBZ: 0987654321\n• WavePay: 09798268154',
         { parse_mode: 'HTML' }
     );
 });
 
 bot.action('back_main', async (ctx) => {
     await ctx.answerCbQuery();
-    await ctx.editMessageText(
-        '<b>🏠 MAIN MENU</b>\n\nPlease select an option below:',
-        { parse_mode: 'HTML', ...mainMenu }
-    );
+    await ctx.editMessageText('<b>🏠 MAIN MENU</b>', { parse_mode: 'HTML', ...mainMenu });
 });
 
 // ============================================
@@ -224,24 +196,16 @@ bot.action(/buy_(\d+)/, async (ctx) => {
     
     const paymentKeyboard = Markup.inlineKeyboard([
         [Markup.button.callback('✅ I HAVE PAID', 'payment_done')],
-        [Markup.button.callback('◀️ Back to Products', 'menu_products')]
+        [Markup.button.callback('◀️ Back', 'menu_products')]
     ]);
     
     await ctx.editMessageText(
         `<b>🛒 ORDER SUMMARY</b>\n\n` +
         `<b>Product:</b> ${productName}\n` +
-        `<b>Duration:</b> 1 month\n` +
-        `<b>Original Price:</b> ${price.toLocaleString()} MMK\n` +
-        `<b>Discount:</b> -${discount}%\n` +
-        `<b>Final Price:</b> ${finalPrice.toLocaleString()} MMK\n\n` +
-        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n` +
-        `<b>💳 PAYMENT INSTRUCTIONS</b>\n` +
-        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
-        `Send payment to:\n` +
-        `• KBZ Bank: 0987654321 (William)\n` +
-        `• WavePay: 09798268154\n\n` +
+        `<b>Price:</b> ${finalPrice.toLocaleString()} MMK\n` +
         `<b>Order ID:</b> #${orderId}\n\n` +
-        `<i>After payment, click "I HAVE PAID" and send your payment proof screenshot.</i>`,
+        `<b>💳 PAYMENT:</b>\n• KBZ: 0987654321\n• WavePay: 09798268154\n\n` +
+        `<i>After payment, click "I HAVE PAID" and send your payment proof.</i>`,
         { parse_mode: 'HTML', ...paymentKeyboard }
     );
 });
@@ -260,22 +224,17 @@ bot.action('payment_done', async (ctx) => {
     }
     
     if (!currentOrder) {
-        await ctx.reply(
-            '❌ No pending order found.\n\nPlease place an order first using the Products menu.',
-            { parse_mode: 'HTML', ...mainMenu }
-        );
+        await ctx.reply('❌ No pending order found. Please start over: /start');
         return;
     }
     
     pendingOrders.set(currentOrderId, { ...currentOrder, status: 'waiting_proof' });
     
     await ctx.reply(
-        `<b>📸 PLEASE SEND YOUR PAYMENT PROOF</b>\n\n` +
+        `<b>📸 SEND PAYMENT PROOF</b>\n\n` +
         `<b>Order ID:</b> #${currentOrderId}\n` +
-        `<b>Product:</b> ${currentOrder.productName}\n` +
         `<b>Amount:</b> ${currentOrder.price.toLocaleString()} MMK\n\n` +
-        `Please send a screenshot of your payment transaction.\n\n` +
-        `<i>Our admin will verify your payment and deliver your product within 30 minutes.</i>`,
+        `Please send a screenshot of your payment.`,
         { parse_mode: 'HTML' }
     );
 });
@@ -284,8 +243,6 @@ bot.action('payment_done', async (ctx) => {
 // PAYMENT PROOF HANDLER
 // ============================================
 bot.on('photo', async (ctx) => {
-    console.log(`📸 Payment proof from user: ${ctx.from.id}`);
-    
     let currentOrder = null;
     let currentOrderId = null;
     for (const [orderId, order] of pendingOrders) {
@@ -296,21 +253,11 @@ bot.on('photo', async (ctx) => {
         }
     }
     
-    if (!currentOrder) {
-        await ctx.reply(
-            '❌ No pending payment found.\n\nPlease place an order first: /start',
-            { parse_mode: 'HTML' }
-        );
-        return;
-    }
+    if (!currentOrder) return;
     
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     
-    pendingOrders.set(currentOrderId, {
-        ...currentOrder,
-        status: 'proof_submitted',
-        proofFileId: photo.file_id
-    });
+    pendingOrders.set(currentOrderId, { ...currentOrder, status: 'proof_submitted' });
     
     await sendOrderToAdmin(
         photo.file_id,
@@ -323,11 +270,8 @@ bot.on('photo', async (ctx) => {
     
     await ctx.reply(
         `<b>✅ PAYMENT PROOF RECEIVED!</b>\n\n` +
-        `<b>Order ID:</b> #${currentOrderId}\n\n` +
-        `⏳ <b>Please wait...</b>\n` +
-        `Our admin is reviewing your payment.\n\n` +
-        `You will receive your product information here within 30 minutes.\n\n` +
-        `<i>Thank you for your patience! 🙏</i>`,
+        `Order ID: #${currentOrderId}\n\n` +
+        `⏳ Admin will review and deliver your product soon.`,
         { parse_mode: 'HTML' }
     );
 });
@@ -337,7 +281,7 @@ bot.on('photo', async (ctx) => {
 // ============================================
 bot.action(/confirm_(\d+)/, async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
-        await ctx.answerCbQuery('⛔ Admin access only');
+        await ctx.answerCbQuery('Admin only');
         return;
     }
     
@@ -346,93 +290,58 @@ bot.action(/confirm_(\d+)/, async (ctx) => {
     
     const order = pendingOrders.get(orderId);
     if (!order) {
-        await ctx.editMessageCaption('❌ Order not found!', { parse_mode: 'HTML' });
+        await ctx.editMessageCaption('❌ Order not found!');
         return;
     }
     
-    awaitingServiceInfo.set(ADMIN_ID, { orderId: orderId, userId: order.userId });
+    activeOrderId = orderId;
+    activeUserId = order.userId;
+    activeProductName = order.productName;
+    awaitingServiceInfo = true;
     
     await ctx.editMessageCaption(
-        `<b>✅ ORDER #${orderId} - CONFIRMATION PENDING</b>\n\n` +
-        `<b>Customer:</b> @${order.username || 'N/A'} (${order.userId})\n` +
-        `<b>Product:</b> ${order.productName}\n` +
-        `<b>Amount:</b> ${order.price.toLocaleString()} MMK\n\n` +
+        `<b>✅ ORDER #${orderId} - PENDING SERVICE INFO</b>\n\n` +
+        `<b>Customer:</b> @${order.username || order.userId}\n` +
+        `<b>Product:</b> ${order.productName}\n\n` +
         `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n` +
-        `<b>📦 NEXT STEP:</b>\n` +
-        `<b>━━━━━━━━━━━━━━━━━━━━━</b>\n\n` +
-        `Please <b>forward or type the service information</b> (login, password, link, etc.) to this chat.\n\n` +
-        `The bot will automatically deliver it to the customer.`,
+        `Please type or paste the service information now.\n` +
+        `(login, password, link, etc.)\n` +
+        `<b>━━━━━━━━━━━━━━━━━━━━━</b>`,
         { parse_mode: 'HTML' }
     );
 });
 
 // ============================================
-// SERVICE INFO DELIVERY (Forwarded or Typed)
+// ADMIN SERVICE INFO HANDLER
 // ============================================
-bot.on('forward_date', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    
-    const pending = awaitingServiceInfo.get(ADMIN_ID);
-    if (!pending) return;
-    
-    const { orderId, userId } = pending;
-    const order = pendingOrders.get(orderId);
-    
-    if (!order) {
-        await ctx.reply('❌ Order not found.');
-        awaitingServiceInfo.delete(ADMIN_ID);
-        return;
-    }
-    
-    let serviceDetails = ctx.message.text || ctx.message.caption || '⚠️ Service information received.';
-    
-    await sendServiceInfoToUser(userId, orderId, order.productName, serviceDetails);
-    
-    buyers.add(userId);
-    
-    pendingOrders.set(orderId, { ...order, status: 'completed', deliveredAt: new Date().toISOString() });
-    awaitingServiceInfo.delete(ADMIN_ID);
-    
-    await ctx.reply(
-        `<b>✅ ORDER #${orderId} - COMPLETED!</b>\n\n` +
-        `Service information sent to <b>@${order.username || userId}</b>.\n\n` +
-        `📦 Status: Delivered ✅\n` +
-        `🕐 Time: ${new Date().toLocaleString()}`,
-        { parse_mode: 'HTML' }
-    );
-});
-
 bot.on('text', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
-    if (awaitingBroadcast) return;
-    
-    const pending = awaitingServiceInfo.get(ADMIN_ID);
-    if (!pending) return;
+    if (!awaitingServiceInfo) return;
     if (ctx.message.text.startsWith('/')) return;
-    
-    const { orderId, userId } = pending;
-    const order = pendingOrders.get(orderId);
-    
-    if (!order) {
-        await ctx.reply('❌ Order not found.');
-        awaitingServiceInfo.delete(ADMIN_ID);
-        return;
-    }
     
     const serviceDetails = ctx.message.text;
     
-    await sendServiceInfoToUser(userId, orderId, order.productName, serviceDetails);
+    await sendServiceInfoToUser(activeUserId, activeOrderId, activeProductName, serviceDetails);
     
-    buyers.add(userId);
+    buyers.add(activeUserId);
     
-    pendingOrders.set(orderId, { ...order, status: 'completed', deliveredAt: new Date().toISOString() });
-    awaitingServiceInfo.delete(ADMIN_ID);
+    const order = pendingOrders.get(activeOrderId);
+    if (order) {
+        pendingOrders.set(activeOrderId, { ...order, status: 'completed' });
+    }
+    
+    awaitingServiceInfo = false;
     
     await ctx.reply(
-        `<b>✅ ORDER #${orderId} - COMPLETED!</b>\n\n` +
-        `Service information sent to <b>@${order.username || userId}</b>.`,
+        `<b>✅ ORDER #${activeOrderId} - COMPLETED!</b>\n\n` +
+        `Service information sent to user.\n` +
+        `Status: Delivered ✅`,
         { parse_mode: 'HTML' }
     );
+    
+    activeOrderId = null;
+    activeUserId = null;
+    activeProductName = null;
 });
 
 // ============================================
@@ -440,7 +349,7 @@ bot.on('text', async (ctx) => {
 // ============================================
 bot.action(/cancel_(\d+)/, async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
-        await ctx.answerCbQuery('⛔ Admin access only');
+        await ctx.answerCbQuery('Admin only');
         return;
     }
     
@@ -448,102 +357,59 @@ bot.action(/cancel_(\d+)/, async (ctx) => {
     await ctx.answerCbQuery();
     
     const order = pendingOrders.get(orderId);
-    if (!order) {
-        await ctx.editMessageCaption('❌ Order not found!', { parse_mode: 'HTML' });
-        return;
-    }
-    
-    pendingOrders.set(orderId, { ...order, status: 'cancelled' });
-    
-    await bot.telegram.sendMessage(
-        order.userId,
-        `<b>❌ ORDER #${orderId} - CANCELLED</b>\n\n` +
-        `Unfortunately, your order has been cancelled.\n\n` +
-        `Please contact support @will815 for assistance.`,
-        { parse_mode: 'HTML', ...mainMenu }
-    );
-    
-    await ctx.editMessageCaption(
-        `<b>❌ ORDER #${orderId} - CANCELLED</b>\n\nCustomer has been notified.`,
-        { parse_mode: 'HTML' }
-    );
-});
-
-// ============================================
-// PROMO CODE
-// ============================================
-bot.command('apply', (ctx) => {
-    const code = ctx.message.text.split(' ')[1];
-    
-    if (!code) {
-        ctx.reply(
-            '<b>🎫 PROMO CODE USAGE</b>\n\nPlease type: <code>/apply YOUR_CODE</code>\n\nExample: <code>/apply HUBBY10</code>',
+    if (order) {
+        pendingOrders.set(orderId, { ...order, status: 'cancelled' });
+        
+        await bot.telegram.sendMessage(
+            order.userId,
+            `<b>❌ ORDER #${orderId} - CANCELLED</b>\n\nPlease contact support @will815.`,
             { parse_mode: 'HTML' }
         );
-        return;
     }
     
-    const validCodes = { 'HUBBY10': 10, 'HUBBY20': 20, 'WELCOME': 15, 'FIRSTBUY': 25 };
-    
-    if (validCodes[code.toUpperCase()]) {
-        ctx.reply(
-            `<b>✅ PROMO CODE APPLIED!</b>\n\n` +
-            `Code: <code>${code.toUpperCase()}</code>\n` +
-            `Discount: ${validCodes[code.toUpperCase()]}% OFF on your first purchase!\n\n` +
-            `Click <b>Products</b> to start shopping.`,
-            { parse_mode: 'HTML', ...mainMenu }
-        );
-    } else {
-        ctx.reply(`<b>❌ INVALID PROMO CODE</b>\n\nThe code <code>${code}</code> is not valid.`, { parse_mode: 'HTML' });
-    }
+    await ctx.editMessageCaption(`<b>❌ ORDER #${orderId} - CANCELLED</b>`, { parse_mode: 'HTML' });
 });
 
 // ============================================
 // ADMIN STATS COMMAND
 // ============================================
-bot.command('stats', async (ctx) => {
+bot.command('stats', (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
-        await ctx.reply('⛔ Access denied. Admin only.');
+        ctx.reply('⛔ Admin only');
         return;
     }
     
-    const totalUsers = users.size;
-    const totalBuyers = buyers.size;
-    const totalOrders = pendingOrders.size;
     const completedOrders = Array.from(pendingOrders.values()).filter(o => o.status === 'completed').length;
     
-    await ctx.reply(
+    ctx.reply(
         `<b>📊 BOT STATISTICS</b>\n\n` +
-        `<b>Total Users:</b> ${totalUsers}\n` +
-        `<b>Total Buyers:</b> ${totalBuyers}\n` +
-        `<b>Total Orders:</b> ${totalOrders}\n` +
+        `<b>Total Users:</b> ${users.size}\n` +
+        `<b>Total Buyers:</b> ${buyers.size}\n` +
+        `<b>Total Orders:</b> ${pendingOrders.size}\n` +
         `<b>Completed Orders:</b> ${completedOrders}\n` +
-        `<b>Pending Orders:</b> ${totalOrders - completedOrders}\n\n` +
-        `<i>Last updated: ${new Date().toLocaleString()}</i>`,
+        `<b>Pending Orders:</b> ${pendingOrders.size - completedOrders}\n\n` +
+        `<i>Updated: ${new Date().toLocaleString()}</i>`,
         { parse_mode: 'HTML' }
     );
 });
 
 // ============================================
-// ADMIN BROADCAST COMMANDS
+// ADMIN BROADCAST COMMAND
 // ============================================
-bot.command('broadcast', async (ctx) => {
+bot.command('broadcast', (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
-        await ctx.reply('⛔ Access denied. Admin only.');
+        ctx.reply('⛔ Admin only');
         return;
     }
     
     const keyboard = Markup.inlineKeyboard([
         [Markup.button.callback('📢 All Users', 'broadcast_all')],
-        [Markup.button.callback('✅ Verified Buyers Only', 'broadcast_buyers')],
+        [Markup.button.callback('✅ Buyers Only', 'broadcast_buyers')],
         [Markup.button.callback('❌ Cancel', 'broadcast_cancel')]
     ]);
     
-    await ctx.reply(
-        `<b>📢 BROADCAST MESSAGE</b>\n\nWho should receive this message?\n\n` +
-        `<b>All Users:</b> Everyone who started the bot (${users.size})\n` +
-        `<b>Verified Buyers:</b> Users who completed a purchase (${buyers.size})\n\n` +
-        `Select an option below:`,
+    ctx.reply(
+        `<b>📢 BROADCAST</b>\n\nSelect target audience:`,
         { parse_mode: 'HTML', ...keyboard }
     );
 });
@@ -559,10 +425,9 @@ bot.action('broadcast_all', async (ctx) => {
     awaitingBroadcast = true;
     
     await ctx.editMessageText(
-        `<b>📢 BROADCAST TO ALL USERS</b>\n\nTarget: <b>${users.size} users</b>\n\n` +
-        `Please send me the message you want to broadcast.\n\n` +
-        `You can send:\n• 📝 Text message\n• 🖼️ Photo with caption\n\n` +
-        `<i>Type /cancel to abort.</i>`,
+        `<b>📢 BROADCAST TO ALL USERS</b>\n\n` +
+        `Target: ${users.size} users\n\n` +
+        `Send me the message (text or photo with caption):`,
         { parse_mode: 'HTML' }
     );
 });
@@ -578,10 +443,9 @@ bot.action('broadcast_buyers', async (ctx) => {
     awaitingBroadcast = true;
     
     await ctx.editMessageText(
-        `<b>📢 BROADCAST TO VERIFIED BUYERS</b>\n\nTarget: <b>${buyers.size} users</b>\n\n` +
-        `Please send me the message you want to broadcast.\n\n` +
-        `You can send:\n• 📝 Text message\n• 🖼️ Photo with caption\n\n` +
-        `<i>Type /cancel to abort.</i>`,
+        `<b>📢 BROADCAST TO BUYERS</b>\n\n` +
+        `Target: ${buyers.size} users\n\n` +
+        `Send me the message (text or photo with caption):`,
         { parse_mode: 'HTML' }
     );
 });
@@ -596,7 +460,7 @@ bot.action('broadcast_cancel', async (ctx) => {
     broadcastTarget = null;
     awaitingBroadcast = false;
     
-    await ctx.editMessageText(`<b>❌ Broadcast cancelled.</b>`, { parse_mode: 'HTML' });
+    await ctx.editMessageText(`<b>❌ Broadcast cancelled</b>`, { parse_mode: 'HTML' });
 });
 
 bot.on('text', async (ctx) => {
@@ -607,15 +471,15 @@ bot.on('text', async (ctx) => {
     broadcastMessage = ctx.message.text;
     
     const confirmKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Send Now', 'broadcast_send')],
+        [Markup.button.callback('✅ SEND NOW', 'broadcast_send')],
         [Markup.button.callback('❌ Cancel', 'broadcast_cancel_confirm')]
     ]);
     
     await ctx.reply(
         `<b>📢 BROADCAST PREVIEW</b>\n\n` +
-        `<b>Target:</b> ${broadcastTarget === 'all' ? `All Users (${users.size})` : `Verified Buyers (${buyers.size})`}\n\n` +
+        `<b>Target:</b> ${broadcastTarget === 'all' ? `All Users (${users.size})` : `Buyers (${buyers.size})`}\n\n` +
         `<b>Message:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${broadcastMessage}\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `Click <b>Send Now</b> to broadcast.`,
+        `Click SEND NOW to broadcast.`,
         { parse_mode: 'HTML', ...confirmKeyboard }
     );
 });
@@ -629,16 +493,16 @@ bot.on('photo', async (ctx) => {
     broadcastMessage = ctx.message.caption || '';
     
     const confirmKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Send Now', 'broadcast_send')],
+        [Markup.button.callback('✅ SEND NOW', 'broadcast_send')],
         [Markup.button.callback('❌ Cancel', 'broadcast_cancel_confirm')]
     ]);
     
     await ctx.reply(
         `<b>📢 BROADCAST PREVIEW</b>\n\n` +
-        `<b>Target:</b> ${broadcastTarget === 'all' ? `All Users (${users.size})` : `Verified Buyers (${buyers.size})`}\n\n` +
-        `<b>Media:</b> Photo received\n` +
-        `<b>Caption:</b> ${broadcastMessage || '(no caption)'}\n\n` +
-        `Click <b>Send Now</b> to broadcast.`,
+        `<b>Target:</b> ${broadcastTarget === 'all' ? `All Users (${users.size})` : `Buyers (${buyers.size})`}\n\n` +
+        `<b>Media:</b> Photo\n` +
+        `<b>Caption:</b> ${broadcastMessage || '(none)'}\n\n` +
+        `Click SEND NOW to broadcast.`,
         { parse_mode: 'HTML', ...confirmKeyboard }
     );
 });
@@ -651,11 +515,11 @@ bot.action('broadcast_send', async (ctx) => {
     await ctx.answerCbQuery();
     
     const targetUsers = broadcastTarget === 'all' ? users : buyers;
-    let successCount = 0;
-    let failCount = 0;
+    let success = 0;
+    let fail = 0;
     
     await ctx.editMessageText(
-        `<b>📢 BROADCAST IN PROGRESS...</b>\n\nSending to ${targetUsers.size} users...\n\n<i>Please wait...</i>`,
+        `<b>📢 BROADCASTING...</b>\n\nSending to ${targetUsers.size} users...`,
         { parse_mode: 'HTML' }
     );
     
@@ -669,19 +533,17 @@ bot.action('broadcast_send', async (ctx) => {
             } else {
                 await bot.telegram.sendMessage(userId, broadcastMessage, { parse_mode: 'HTML' });
             }
-            successCount++;
+            success++;
         } catch (err) {
-            failCount++;
+            fail++;
         }
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(r => setTimeout(r, 50));
     }
     
     await ctx.reply(
-        `<b>✅ BROADCAST COMPLETED!</b>\n\n` +
-        `<b>Target:</b> ${broadcastTarget === 'all' ? 'All Users' : 'Verified Buyers'}\n` +
-        `<b>Sent:</b> ${successCount} users\n` +
-        `<b>Failed:</b> ${failCount} users\n\n` +
-        `<i>Broadcast finished at ${new Date().toLocaleString()}</i>`,
+        `<b>✅ BROADCAST COMPLETED</b>\n\n` +
+        `<b>Sent:</b> ${success}\n` +
+        `<b>Failed:</b> ${fail}`,
         { parse_mode: 'HTML' }
     );
     
@@ -701,15 +563,24 @@ bot.action('broadcast_cancel_confirm', async (ctx) => {
     broadcastTarget = null;
     awaitingBroadcast = false;
     
-    await ctx.editMessageText(`<b>❌ Broadcast cancelled.</b>`, { parse_mode: 'HTML' });
+    await ctx.editMessageText(`<b>❌ Broadcast cancelled</b>`, { parse_mode: 'HTML' });
 });
 
-bot.command('cancel', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    if (awaitingBroadcast) {
-        awaitingBroadcast = false;
-        broadcastTarget = null;
-        await ctx.reply('❌ Broadcast cancelled.');
+// ============================================
+// PROMO CODE COMMAND
+// ============================================
+bot.command('apply', (ctx) => {
+    const code = ctx.message.text.split(' ')[1];
+    if (!code) {
+        ctx.reply('❌ Usage: /apply CODE');
+        return;
+    }
+    
+    const validCodes = ['HUBBY10', 'HUBBY20', 'WELCOME', 'FIRSTBUY'];
+    if (validCodes.includes(code.toUpperCase())) {
+        ctx.reply(`✅ Promo code ${code.toUpperCase()} applied!`, { parse_mode: 'HTML', ...mainMenu });
+    } else {
+        ctx.reply(`❌ Invalid promo code: ${code}`);
     }
 });
 
@@ -717,20 +588,19 @@ bot.command('cancel', async (ctx) => {
 // TEST COMMAND
 // ============================================
 bot.command('test', (ctx) => {
-    ctx.reply('✅ Bot is online and working properly!', { parse_mode: 'HTML' });
+    ctx.reply('✅ Bot is working!');
 });
 
 // ============================================
-// UNKNOWN MESSAGE HANDLER
+// CANCEL BROADCAST COMMAND
 // ============================================
-bot.on('text', (ctx) => {
-    if (ctx.from.id === ADMIN_ID) return;
-    if (ctx.message.text.startsWith('/')) return;
-    
-    ctx.reply(
-        '❓ <b>Command not recognized</b>\n\nPlease use the buttons below or type /start',
-        { parse_mode: 'HTML', ...mainMenu }
-    );
+bot.command('cancel', (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return;
+    if (awaitingBroadcast) {
+        awaitingBroadcast = false;
+        broadcastTarget = null;
+        ctx.reply('❌ Broadcast cancelled');
+    }
 });
 
 // ============================================
@@ -739,10 +609,7 @@ bot.on('text', (ctx) => {
 bot.launch()
     .then(() => {
         console.log('========================================');
-        console.log('✅ BOT IS RUNNING SUCCESSFULLY!');
-        console.log('========================================');
-        console.log('🤖 Bot: @digitalhub_official_bot');
-        console.log(`👑 Admin ID: ${ADMIN_ID}`);
+        console.log('✅ BOT RUNNING SUCCESSFULLY!');
         console.log('========================================');
     })
     .catch((err) => {
