@@ -86,7 +86,14 @@ if (!users.has(ADMIN_ID)) {
 }
 
 // Sessions
-let announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
+let announceSession = { 
+    active: false, 
+    targets: [], 
+    message: '', 
+    photo: null, 
+    step: null, 
+    waitingForConfirmation: false 
+};
 let importMode = false;
 
 const products = [
@@ -309,6 +316,31 @@ bot.action(/paid_(\d+)/, async (ctx) => {
 // PAYMENT PROOF HANDLER
 // ============================================
 bot.on('photo', async (ctx) => {
+    // FIRST: Check if this is an announcement (admin only)
+    if (ctx.from.id === ADMIN_ID && announceSession.active && announceSession.step === 'media' && announceSession.targets.length > 0 && !announceSession.waitingForConfirmation) {
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
+        announceSession.photo = photo.file_id;
+        announceSession.message = ctx.message.caption || '';
+        announceSession.waitingForConfirmation = true;
+        
+        const confirmKeyboard = Markup.inlineKeyboard([
+            [Markup.button.callback('✅ SEND NOW', 'announce_send_msg')],
+            [Markup.button.callback('❌ Cancel', 'announce_cancel_btn')]
+        ]);
+        
+        let previewText = `📢 <b>Preview</b>\n\n<b>Target:</b> ${announceSession.targets.length} users\n\n`;
+        if (announceSession.message) {
+            previewText += `<b>Caption:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        } else {
+            previewText += `<i>No caption</i>\n\n`;
+        }
+        previewText += `Send now?`;
+        
+        await ctx.reply(previewText, { parse_mode: 'HTML', ...confirmKeyboard });
+        return;
+    }
+    
+    // SECOND: Check if this is a payment proof
     let orderId = null;
     let order = null;
     
@@ -509,7 +541,7 @@ bot.action('admin_export', async (ctx) => {
 });
 
 // ============================================
-// ANNOUNCEMENT SYSTEM (WITH PHOTO SUPPORT - FIXED)
+// ANNOUNCEMENT SYSTEM
 // ============================================
 bot.action('admin_announce', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -636,7 +668,6 @@ bot.on('text', async (ctx) => {
                         imported: true
                     });
                     added++;
-                    console.log(`✅ Imported: ${userId}`);
                 } else if (username && !username.startsWith('user_')) {
                     const existing = users.get(userId);
                     if (existing.username !== username) {
@@ -733,68 +764,7 @@ bot.on('text', async (ctx) => {
 });
 
 // ============================================
-// PHOTO HANDLER (Announcement with photo - FIXED)
-// ============================================
-bot.on('photo', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    
-    // If in announcement mode, handle as announcement
-    if (announceSession.active && announceSession.step === 'media' && announceSession.targets.length > 0 && !announceSession.waitingForConfirmation) {
-        const photo = ctx.message.photo[ctx.message.photo.length - 1];
-        announceSession.photo = photo.file_id;
-        announceSession.message = ctx.message.caption || '';
-        announceSession.waitingForConfirmation = true;
-        
-        const confirmKeyboard = Markup.inlineKeyboard([
-            [Markup.button.callback('✅ SEND NOW', 'announce_send_msg')],
-            [Markup.button.callback('❌ Cancel', 'announce_cancel_btn')]
-        ]);
-        
-        let previewText = `📢 <b>Preview</b>\n\n<b>Target:</b> ${announceSession.targets.length} users\n\n`;
-        if (announceSession.message) {
-            previewText += `<b>Caption:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
-        } else {
-            previewText += `<i>No caption</i>\n\n`;
-        }
-        previewText += `Send now?`;
-        
-        await ctx.reply(previewText, { parse_mode: 'HTML', ...confirmKeyboard });
-        return;
-    }
-    
-    // Otherwise, this is a payment proof
-    let orderId = null;
-    let order = null;
-    
-    for (const [id, o] of pendingOrders) {
-        if (o.userId === ctx.from.id && o.status === 'waiting_proof') {
-            orderId = id;
-            order = o;
-            break;
-        }
-    }
-    
-    if (!order) return;
-    
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    pendingOrders.set(orderId, { ...order, status: 'proof_submitted', proofId: photo.file_id });
-    saveOrders(pendingOrders);
-    
-    const adminKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Confirm', `confirm_${orderId}`)],
-        [Markup.button.callback('❌ Cancel', `cancel_${orderId}`)]
-    ]);
-    
-    await bot.telegram.sendPhoto(ADMIN_ID, photo.file_id, {
-        caption: `🆕 ORDER #${orderId}\n\n👤 @${order.username || 'N/A'} | ${order.userId}\n🛍️ ${order.product}\n💰 ${order.price.toLocaleString()} MMK`,
-        ...adminKeyboard
-    });
-    
-    await ctx.reply(`✅ Payment proof received! Order #${orderId}\n\n⏳ Admin will confirm soon.`);
-});
-
-// ============================================
-// SEND ANNOUNCEMENT (Text or Photo - FIXED)
+// SEND ANNOUNCEMENT (Text or Photo)
 // ============================================
 bot.action('announce_send_msg', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -817,13 +787,11 @@ bot.action('announce_send_msg', async (ctx) => {
     for (const userId of announceSession.targets) {
         try {
             if (announceSession.photo) {
-                // Send photo with caption (preserves formatting)
                 await bot.telegram.sendPhoto(userId, announceSession.photo, {
                     caption: announceSession.message,
                     parse_mode: 'HTML'
                 });
             } else {
-                // Send text message (preserves HTML formatting)
                 await bot.telegram.sendMessage(userId, announceSession.message, { parse_mode: 'HTML' });
             }
             sent++;
