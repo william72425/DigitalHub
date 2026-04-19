@@ -7,14 +7,12 @@ const ADMIN_ID = 1379973354;
 
 // File paths
 const USERS_FILE = path.join(__dirname, 'users.json');
-const USERS_BACKUP_FILE = path.join(__dirname, 'users.backup.json');
 const ORDERS_FILE = path.join(__dirname, 'orders.json');
 
 // ============================================
-// PERSISTENT STORAGE FUNCTIONS
+// PERSISTENT STORAGE
 // ============================================
 function loadUsers() {
-    // Try main file first
     try {
         if (fs.existsSync(USERS_FILE)) {
             const data = fs.readFileSync(USERS_FILE, 'utf8');
@@ -23,35 +21,10 @@ function loadUsers() {
             for (const [key, value] of Object.entries(parsed)) {
                 usersMap.set(parseInt(key), value);
             }
-            if (usersMap.size > 0) {
-                console.log(`✅ Loaded ${usersMap.size} users from file`);
-                return usersMap;
-            }
+            console.log(`✅ Loaded ${usersMap.size} users`);
+            return usersMap;
         }
-    } catch (err) {
-        console.error('Error loading users:', err.message);
-    }
-    
-    // Try backup file
-    try {
-        if (fs.existsSync(USERS_BACKUP_FILE)) {
-            const data = fs.readFileSync(USERS_BACKUP_FILE, 'utf8');
-            const parsed = JSON.parse(data);
-            const usersMap = new Map();
-            for (const [key, value] of Object.entries(parsed)) {
-                usersMap.set(parseInt(key), value);
-            }
-            if (usersMap.size > 0) {
-                console.log(`✅ Loaded ${usersMap.size} users from backup`);
-                saveUsers(usersMap); // Restore main file
-                return usersMap;
-            }
-        }
-    } catch (err) {
-        console.error('Error loading backup:', err.message);
-    }
-    
-    console.log('📁 No users found, starting fresh');
+    } catch (err) {}
     return new Map();
 }
 
@@ -59,11 +32,8 @@ function saveUsers(usersMap) {
     try {
         const obj = Object.fromEntries(usersMap);
         fs.writeFileSync(USERS_FILE, JSON.stringify(obj, null, 2));
-        fs.writeFileSync(USERS_BACKUP_FILE, JSON.stringify(obj, null, 2));
-        console.log(`✅ Saved ${usersMap.size} users to file and backup`);
-    } catch (err) {
-        console.error('Error saving users:', err.message);
-    }
+        console.log(`✅ Saved ${usersMap.size} users`);
+    } catch (err) {}
 }
 
 function loadOrders() {
@@ -75,12 +45,10 @@ function loadOrders() {
             for (const [key, value] of Object.entries(parsed)) {
                 ordersMap.set(parseInt(key), value);
             }
-            console.log(`✅ Loaded ${ordersMap.size} orders from file`);
+            console.log(`✅ Loaded ${ordersMap.size} orders`);
             return ordersMap;
         }
-    } catch (err) {
-        console.error('Error loading orders:', err.message);
-    }
+    } catch (err) {}
     return new Map();
 }
 
@@ -88,10 +56,7 @@ function saveOrders(ordersMap) {
     try {
         const obj = Object.fromEntries(ordersMap);
         fs.writeFileSync(ORDERS_FILE, JSON.stringify(obj, null, 2));
-        console.log(`✅ Saved ${ordersMap.size} orders to file`);
-    } catch (err) {
-        console.error('Error saving orders:', err.message);
-    }
+    } catch (err) {}
 }
 
 // ============================================
@@ -116,6 +81,10 @@ let announceSession = {
     waitingForConfirmation: false
 };
 
+// Import session
+let importMode = false;
+let importList = [];
+
 const products = [
     { id: 1, name: 'ChatGPT Plus', category: 'AI Tools', price: 120000, discount: 46, duration: '1 month', logo: '🤖' },
     { id: 2, name: 'Canva Pro', category: 'Photo Editing', price: 8000, discount: 25, duration: '1 month', logo: '🎨' },
@@ -128,7 +97,6 @@ console.log('========================================');
 console.log('🤖 Digital Hub Bot Starting...');
 console.log(`👑 Admin ID: ${ADMIN_ID}`);
 console.log(`📊 Users in DB: ${users.size}`);
-console.log(`📊 Orders in DB: ${pendingOrders.size}`);
 console.log('========================================');
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -162,8 +130,24 @@ const adminMenu = Markup.inlineKeyboard([
     [Markup.button.callback('📢 Announcement', 'admin_announce')],
     [Markup.button.callback('📊 Stats', 'admin_stats')],
     [Markup.button.callback('➕ Import Users', 'admin_import')],
+    [Markup.button.callback('📤 Export Users', 'admin_export')],
     [Markup.button.callback('🧪 Test', 'admin_test')]
 ]);
+
+// ============================================
+// NEW USER NOTIFICATION TO ADMIN
+// ============================================
+async function notifyAdminNewUser(userId, username, firstName) {
+    const format = `<code>${username || 'no_username'} | ${userId}</code>`;
+    const message = 
+        `🆕 <b>NEW USER JOINED</b>\n\n` +
+        `${format}\n\n` +
+        `<b>Name:</b> ${firstName}\n` +
+        `<b>Total Users:</b> ${users.size}\n\n` +
+        `<i>Copy the line above to add to your sheet.</i>`;
+    
+    await bot.telegram.sendMessage(ADMIN_ID, message, { parse_mode: 'HTML' });
+}
 
 // ============================================
 // START COMMAND
@@ -173,19 +157,35 @@ bot.start(async (ctx) => {
     const username = ctx.from.username;
     const firstName = ctx.from.first_name;
     
-    if (!users.has(userId)) {
+    const isNewUser = !users.has(userId);
+    
+    if (isNewUser) {
         users.set(userId, { 
             username: username, 
             firstName: firstName, 
-            joined: new Date().toISOString() 
+            joined: new Date().toISOString(),
+            lastActive: new Date().toISOString()
         });
         saveUsers(users);
-        console.log(`✅ New user: ${userId} (@${username}) - Total: ${users.size}`);
+        console.log(`✅ New user: ${userId} (@${username})`);
+        
+        // Send notification to admin
+        await notifyAdminNewUser(userId, username, firstName);
+    } else {
+        // Update last active and username (in case username changed)
+        const existing = users.get(userId);
+        users.set(userId, { 
+            ...existing,
+            username: username, 
+            firstName: firstName,
+            lastActive: new Date().toISOString()
+        });
+        saveUsers(users);
     }
     
     if (userId === ADMIN_ID) {
         await ctx.reply(
-            `🔧 <b>Admin Panel</b>\n\nWelcome back, ${firstName}!\n👥 Users: ${users.size}\n📦 Orders: ${pendingOrders.size}`,
+            `🔧 <b>Admin Panel</b>\n\nWelcome back!\n👥 Users: ${users.size}\n📦 Orders: ${pendingOrders.size}`,
             { parse_mode: 'HTML', ...adminMenu }
         );
     } else {
@@ -197,11 +197,8 @@ bot.start(async (ctx) => {
 });
 
 // ============================================
-// IMPORT USERS COMMAND
+// IMPORT USERS (Username | ID format)
 // ============================================
-let importMode = false;
-let importList = [];
-
 bot.action('admin_import', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
         await ctx.answerCbQuery('Admin only');
@@ -210,17 +207,15 @@ bot.action('admin_import', async (ctx) => {
     await ctx.answerCbQuery();
     
     importMode = true;
-    importList = [];
     
     await ctx.editMessageText(
         `<b>➕ IMPORT USERS</b>\n\n` +
-        `Send me a list of user IDs, one per line:\n\n` +
-        `<code>1379973354</code>\n` +
-        `<code>1692683286</code>\n` +
-        `<code>123456789</code>\n\n` +
-        `You can also send usernames with @:\n\n` +
-        `<code>@username1</code>\n` +
-        `<code>@username2</code>\n\n` +
+        `Send me user data in this format (one per line):\n\n` +
+        `<code>@username | 123456789</code>\n` +
+        `<code>john_doe | 987654321</code>\n\n` +
+        `Or just user IDs:\n\n` +
+        `<code>123456789</code>\n` +
+        `<code>987654321</code>\n\n` +
         `Type /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
@@ -229,61 +224,193 @@ bot.action('admin_import', async (ctx) => {
 // Handle import input
 bot.on('text', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
-    if (!importMode) return;
-    if (ctx.message.text === '/cancel') {
+    
+    // Handle import mode
+    if (importMode) {
+        if (ctx.message.text === '/cancel') {
+            importMode = false;
+            await ctx.reply('❌ Import cancelled.', { parse_mode: 'HTML', ...adminMenu });
+            return;
+        }
+        
+        const lines = ctx.message.text.split('\n');
+        let added = 0;
+        let updated = 0;
+        let invalid = 0;
+        
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            
+            let userId = null;
+            let username = null;
+            
+            // Check format: "username | id" or "id"
+            if (trimmed.includes('|')) {
+                const parts = trimmed.split('|');
+                const userPart = parts[0].trim();
+                const idPart = parts[1].trim();
+                
+                // Extract username (remove @ if present)
+                username = userPart.replace(/^@/, '');
+                
+                // Extract ID
+                if (/^\d+$/.test(idPart)) {
+                    userId = parseInt(idPart);
+                }
+            } else if (/^\d+$/.test(trimmed)) {
+                userId = parseInt(trimmed);
+                username = `user_${userId}`;
+            }
+            
+            if (userId && !isNaN(userId)) {
+                if (!users.has(userId)) {
+                    users.set(userId, {
+                        username: username,
+                        firstName: `Imported_${userId}`,
+                        joined: new Date().toISOString(),
+                        imported: true
+                    });
+                    added++;
+                } else {
+                    // Update username if provided
+                    if (username) {
+                        const existing = users.get(userId);
+                        users.set(userId, { ...existing, username: username });
+                        updated++;
+                    }
+                }
+            } else {
+                invalid++;
+            }
+        }
+        
+        saveUsers(users);
         importMode = false;
-        importList = [];
-        await ctx.reply('❌ Import cancelled.');
+        
+        await ctx.reply(
+            `<b>✅ Import Complete!</b>\n\n` +
+            `Added: ${added} new users\n` +
+            `Updated: ${updated} users\n` +
+            `Invalid: ${invalid} lines\n\n` +
+            `Total users now: ${users.size}`,
+            { parse_mode: 'HTML', ...adminMenu }
+        );
         return;
     }
     
-    const lines = ctx.message.text.split('\n');
-    let added = 0;
-    let skipped = 0;
-    
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        
-        let userId = null;
-        let username = null;
-        
-        // Check if it's a username with @
-        if (trimmed.startsWith('@')) {
-            username = trimmed.substring(1);
-            // We'll store as pending - user needs to start bot to get ID
-            // For now, just store username
-            continue;
-        }
-        
-        // Check if it's a numeric ID
-        if (/^\d+$/.test(trimmed)) {
-            userId = parseInt(trimmed);
-        }
-        
-        if (userId && !users.has(userId)) {
-            users.set(userId, {
-                username: null,
-                firstName: `Imported_${userId}`,
-                joined: new Date().toISOString(),
-                imported: true
-            });
-            added++;
-        } else if (userId && users.has(userId)) {
-            skipped++;
-        }
+    // Regular text handling for announcements
+    if (!announceSession.active) return;
+    if (ctx.message.text === '/cancel') {
+        announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
+        await ctx.reply('❌ Cancelled.');
+        return;
     }
     
-    saveUsers(users);
-    importMode = false;
+    // Handle announcement steps...
+    if (announceSession.step === 'usernames') {
+        const lines = ctx.message.text.split('\n');
+        const found = [];
+        const notFound = [];
+        
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            
+            let userId = null;
+            
+            // Check if it's an ID directly
+            if (/^\d+$/.test(trimmed)) {
+                userId = parseInt(trimmed);
+                if (users.has(userId)) {
+                    found.push(userId);
+                } else {
+                    notFound.push(`ID: ${trimmed}`);
+                }
+            }
+            // Check if it's username format
+            else {
+                const username = trimmed.replace(/^@/, '');
+                for (const [id, data] of users) {
+                    if (data.username === username) {
+                        found.push(id);
+                        break;
+                    }
+                }
+                notFound.push(`@${username}`);
+            }
+        }
+        
+        if (found.length === 0) {
+            await ctx.reply(`❌ No valid users found.\n\nUse /import to add users first.\n\nTry again or /cancel`);
+            return;
+        }
+        
+        announceSession.targets = found;
+        announceSession.step = 'media';
+        
+        let reply = `✅ Target: ${found.length} users\n\n`;
+        if (notFound.length > 0 && notFound.length <= 10) {
+            reply += `⚠️ Not found: ${notFound.join(', ')}\n\n`;
+        } else if (notFound.length > 10) {
+            reply += `⚠️ ${notFound.length} users not found\n\n`;
+        }
+        reply += `Now send your announcement (text or photo with caption).`;
+        
+        await ctx.reply(reply);
+        return;
+    }
     
-    await ctx.reply(
-        `<b>✅ Import Complete!</b>\n\n` +
-        `Added: ${added} users\n` +
-        `Skipped (already exist): ${skipped}\n\n` +
-        `Total users now: ${users.size}`,
-        { parse_mode: 'HTML', ...adminMenu }
-    );
+    if (announceSession.step === 'media' && announceSession.targets.length > 0 && !announceSession.waitingForConfirmation) {
+        announceSession.message = ctx.message.text;
+        announceSession.photo = null;
+        announceSession.waitingForConfirmation = true;
+        
+        const confirmKeyboard = Markup.inlineKeyboard([
+            [Markup.button.callback('✅ SEND NOW', 'announce_send_msg')],
+            [Markup.button.callback('❌ Cancel', 'announce_cancel_btn')]
+        ]);
+        
+        await ctx.reply(
+            `📢 <b>Preview</b>\n\n` +
+            `<b>Target:</b> ${announceSession.targets.length} users\n\n` +
+            `<b>Message:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `Send now?`,
+            { parse_mode: 'HTML', ...confirmKeyboard }
+        );
+    }
+});
+
+// ============================================
+// EXPORT USERS
+// ============================================
+bot.action('admin_export', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+        await ctx.answerCbQuery('Admin only');
+        return;
+    }
+    await ctx.answerCbQuery();
+    
+    if (users.size === 0) {
+        await ctx.editMessageText('❌ No users to export.');
+        return;
+    }
+    
+    let exportText = '';
+    for (const [id, data] of users) {
+        const username = data.username || 'no_username';
+        exportText += `${username} | ${id}\n`;
+    }
+    
+    // Send as file
+    try {
+        const tempFile = path.join(__dirname, 'export_users.txt');
+        fs.writeFileSync(tempFile, exportText, 'utf8');
+        await ctx.replyWithDocument({ source: tempFile }, { caption: `📤 Exported ${users.size} users` });
+        fs.unlinkSync(tempFile);
+    } catch (err) {
+        await ctx.reply(exportText);
+    }
 });
 
 // ============================================
@@ -419,7 +546,7 @@ bot.on('photo', async (ctx) => {
     ]);
     
     await bot.telegram.sendPhoto(ADMIN_ID, photo.file_id, {
-        caption: `🆕 ORDER #${orderId}\n\n👤 @${order.username || 'N/A'}\n🛍️ ${order.product}\n💰 ${order.price.toLocaleString()} MMK`,
+        caption: `🆕 ORDER #${orderId}\n\n👤 @${order.username || 'N/A'} | ${order.userId}\n🛍️ ${order.product}\n💰 ${order.price.toLocaleString()} MMK`,
         ...adminKeyboard
     });
     
@@ -490,14 +617,14 @@ bot.action('admin_users', async (ctx) => {
     await ctx.answerCbQuery();
     
     if (users.size === 0) {
-        await ctx.reply('📊 No users in database yet.\n\nUsers appear when they send /start or you import them.');
+        await ctx.reply('📊 No users in database.\n\nUsers appear when they send /start or you import them.');
         return;
     }
     
     let msg = `👥 <b>USER LIST</b> (${users.size} total)\n\n`;
     let i = 1;
     for (const [id, data] of users) {
-        msg += `${i}. <b>${data.firstName}</b> (@${data.username || 'no username'})\n   🆔 ID: <code>${id}</code>\n   📅 Joined: ${new Date(data.joined).toLocaleDateString()}\n\n`;
+        msg += `${i}. <code>${data.username || 'no_username'} | ${id}</code>\n`;
         i++;
         if (msg.length > 3000) {
             await ctx.reply(msg, { parse_mode: 'HTML' });
@@ -521,8 +648,7 @@ bot.action('admin_stats', async (ctx) => {
         `<b>Total Users:</b> ${users.size}\n` +
         `<b>Total Orders:</b> ${pendingOrders.size}\n` +
         `<b>Confirmed Orders:</b> ${confirmed}\n` +
-        `<b>Pending Orders:</b> ${pendingOrders.size - confirmed}\n\n` +
-        `<i>Data is persistent across restarts!</i>`,
+        `<b>Pending Orders:</b> ${pendingOrders.size - confirmed}`,
         { parse_mode: 'HTML' }
     );
 });
@@ -533,7 +659,7 @@ bot.action('admin_test', async (ctx) => {
         return;
     }
     await ctx.answerCbQuery();
-    await ctx.reply(`✅ Bot is working!\n\nUsers in database: ${users.size}\nOrders: ${pendingOrders.size}`);
+    await ctx.reply(`✅ Bot is working!\n\nUsers: ${users.size}\nOrders: ${pendingOrders.size}`);
 });
 
 // ============================================
@@ -572,7 +698,7 @@ bot.action('announce_all', async (ctx) => {
     await ctx.answerCbQuery();
     
     if (users.size === 0) {
-        await ctx.editMessageText('❌ No users in database. Use "Import Users" first.');
+        await ctx.editMessageText('❌ No users. Use "Import Users" first.');
         announceSession.active = false;
         return;
     }
@@ -582,11 +708,7 @@ bot.action('announce_all', async (ctx) => {
     
     await ctx.editMessageText(
         `📢 <b>Target: ALL ${announceSession.targets.length} USERS</b>\n\n` +
-        `Send me your announcement.\n\n` +
-        `You can send:\n` +
-        `• 📝 Text message\n` +
-        `• 🖼️ Photo with or without caption\n\n` +
-        `Type /cancel to abort.`,
+        `Send your announcement (text or photo).\n\nType /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
 });
@@ -598,8 +720,9 @@ bot.action('announce_specific', async (ctx) => {
     announceSession.step = 'usernames';
     
     await ctx.editMessageText(
-        `📢 <b>Send usernames</b>\n\nSend one username per line:\n\n` +
-        `<code>@user1</code>\n<code>@user2</code>\n<code>@user3</code>\n\n` +
+        `📢 <b>Send user IDs or usernames</b>\n\nOne per line:\n\n` +
+        `<code>123456789</code> (user ID)\n` +
+        `<code>@username</code> (username)\n\n` +
         `Type /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
@@ -611,77 +734,6 @@ bot.action('announce_cancel_btn', async (ctx) => {
     
     announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
     await ctx.editMessageText('❌ Announcement cancelled.', { parse_mode: 'HTML' });
-});
-
-// Handle text for usernames
-bot.on('text', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    if (!announceSession.active) return;
-    if (ctx.message.text === '/cancel') {
-        announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
-        await ctx.reply('❌ Cancelled.');
-        return;
-    }
-    
-    // Step: receiving usernames
-    if (announceSession.step === 'usernames') {
-        const lines = ctx.message.text.split('\n');
-        const found = [];
-        const notFound = [];
-        
-        for (const line of lines) {
-            const match = line.match(/@(\w+)/);
-            if (match) {
-                const username = match[1];
-                let foundUser = false;
-                for (const [id, data] of users) {
-                    if (data.username === username) {
-                        found.push(id);
-                        foundUser = true;
-                        break;
-                    }
-                }
-                if (!foundUser) notFound.push(`@${username}`);
-            }
-        }
-        
-        if (found.length === 0) {
-            await ctx.reply(`❌ No valid users found.\n\nMake sure users have started the bot or import them first.\n\nTry again or /cancel`);
-            return;
-        }
-        
-        announceSession.targets = found;
-        announceSession.step = 'media';
-        
-        let reply = `✅ Target: ${found.length} users\n\n`;
-        if (notFound.length > 0) {
-            reply += `⚠️ Not found: ${notFound.join(', ')}\n\n`;
-        }
-        reply += `Now send your announcement (text or photo with caption).`;
-        
-        await ctx.reply(reply);
-        return;
-    }
-    
-    // Step: receiving text message for announcement
-    if (announceSession.step === 'media' && announceSession.targets.length > 0 && !announceSession.waitingForConfirmation) {
-        announceSession.message = ctx.message.text;
-        announceSession.photo = null;
-        announceSession.waitingForConfirmation = true;
-        
-        const confirmKeyboard = Markup.inlineKeyboard([
-            [Markup.button.callback('✅ SEND NOW', 'announce_send_msg')],
-            [Markup.button.callback('❌ Cancel', 'announce_cancel_btn')]
-        ]);
-        
-        await ctx.reply(
-            `📢 <b>Preview</b>\n\n` +
-            `<b>Target:</b> ${announceSession.targets.length} users\n\n` +
-            `<b>Message:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
-            `Send now?`,
-            { parse_mode: 'HTML', ...confirmKeyboard }
-        );
-    }
 });
 
 // Handle photo for announcement
@@ -705,8 +757,6 @@ bot.on('photo', async (ctx) => {
     let previewText = `📢 <b>Preview</b>\n\n<b>Target:</b> ${announceSession.targets.length} users\n\n`;
     if (announceSession.message) {
         previewText += `<b>Caption:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    } else {
-        previewText += `<i>No caption</i>\n\n`;
     }
     previewText += `Send now?`;
     
@@ -745,20 +795,18 @@ bot.action('announce_send_msg', async (ctx) => {
             sent++;
         } catch (err) {
             failed++;
-            console.log(`Failed to send to ${userId}: ${err.message}`);
         }
         await new Promise(r => setTimeout(r, 50));
     }
     
     await ctx.reply(
         `<b>✅ Announcement Sent!</b>\n\n` +
-        `<b>📤 Sent:</b> ${sent}\n` +
-        `<b>❌ Failed:</b> ${failed}\n\n` +
+        `<b>Sent:</b> ${sent}\n` +
+        `<b>Failed:</b> ${failed}\n\n` +
         `<b>Targeted:</b> ${announceSession.targets.length} users`,
         { parse_mode: 'HTML' }
     );
     
-    // Reset session
     announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
 });
 
@@ -780,7 +828,7 @@ bot.command('test', (ctx) => {
         ctx.reply('Not available');
         return;
     }
-    ctx.reply(`✅ Bot is working!\n\nUsers: ${users.size}\nOrders: ${pendingOrders.size}`);
+    ctx.reply(`✅ Bot working!\nUsers: ${users.size}\nOrders: ${pendingOrders.size}`);
 });
 
 // ============================================
@@ -809,7 +857,6 @@ bot.launch()
         console.log('========================================');
         console.log('✅ BOT RUNNING!');
         console.log(`📊 Users: ${users.size}`);
-        console.log(`📊 Orders: ${pendingOrders.size}`);
         console.log('========================================');
     })
     .catch(err => console.error('Error:', err));
