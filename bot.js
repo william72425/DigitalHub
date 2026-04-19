@@ -10,7 +10,7 @@ const USERS_FILE = path.join(__dirname, 'users.json');
 const ORDERS_FILE = path.join(__dirname, 'orders.json');
 
 // ============================================
-// PERSISTENT STORAGE - PROPER WORKING VERSION
+// PERSISTENT STORAGE
 // ============================================
 function loadUsers() {
     try {
@@ -21,15 +21,10 @@ function loadUsers() {
             for (const [key, value] of Object.entries(parsed)) {
                 usersMap.set(parseInt(key), value);
             }
-            console.log(`✅ Loaded ${usersMap.size} users from file`);
+            console.log(`✅ Loaded ${usersMap.size} users`);
             return usersMap;
-        } else {
-            console.log('📁 No users file found, creating new one');
-            fs.writeFileSync(USERS_FILE, JSON.stringify({}, null, 2));
         }
-    } catch (err) {
-        console.error('Error loading users:', err.message);
-    }
+    } catch (err) {}
     return new Map();
 }
 
@@ -37,10 +32,9 @@ function saveUsers(usersMap) {
     try {
         const obj = Object.fromEntries(usersMap);
         fs.writeFileSync(USERS_FILE, JSON.stringify(obj, null, 2));
-        console.log(`✅ Saved ${usersMap.size} users to file`);
+        console.log(`✅ Saved ${usersMap.size} users`);
         return true;
     } catch (err) {
-        console.error('Error saving users:', err.message);
         return false;
     }
 }
@@ -54,14 +48,10 @@ function loadOrders() {
             for (const [key, value] of Object.entries(parsed)) {
                 ordersMap.set(parseInt(key), value);
             }
-            console.log(`✅ Loaded ${ordersMap.size} orders from file`);
+            console.log(`✅ Loaded ${ordersMap.size} orders`);
             return ordersMap;
-        } else {
-            fs.writeFileSync(ORDERS_FILE, JSON.stringify({}, null, 2));
         }
-    } catch (err) {
-        console.error('Error loading orders:', err.message);
-    }
+    } catch (err) {}
     return new Map();
 }
 
@@ -84,7 +74,7 @@ if (pendingOrders.size > 0) {
     orderCounter = maxId + 1;
 }
 
-// Make sure admin is always in users list
+// Ensure admin is in users
 if (!users.has(ADMIN_ID)) {
     users.set(ADMIN_ID, {
         username: 'william815',
@@ -93,20 +83,10 @@ if (!users.has(ADMIN_ID)) {
         isAdmin: true
     });
     saveUsers(users);
-    console.log('✅ Admin added to users list');
 }
 
-// Announcement session
-let announceSession = {
-    active: false,
-    targets: [],
-    message: '',
-    photo: null,
-    step: null,
-    waitingForConfirmation: false
-};
-
-// Import session
+// Sessions
+let announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
 let importMode = false;
 
 const products = [
@@ -131,7 +111,7 @@ function getFinalPrice(product) {
 }
 
 // ============================================
-// NEW USER NOTIFICATION (TAB FORMAT FOR SHEETS)
+// NEW USER NOTIFICATION (TAB for Sheets)
 // ============================================
 async function notifyAdminNewUser(userId, username, firstName) {
     const usernameDisplay = username || 'no_username';
@@ -142,7 +122,7 @@ async function notifyAdminNewUser(userId, username, firstName) {
         `<code>${tabSeparated}</code>\n\n` +
         `<b>Name:</b> ${firstName}\n` +
         `<b>Total Users:</b> ${users.size}\n\n` +
-        `<i>📋 Copy the line above → Paste into Google Sheets → Auto splits into 2 columns</i>`;
+        `<i>📋 Copy → Paste into Google Sheets → Auto 2 columns</i>`;
     
     await bot.telegram.sendMessage(ADMIN_ID, message, { parse_mode: 'HTML' });
 }
@@ -193,11 +173,9 @@ bot.start(async (ctx) => {
             lastActive: new Date().toISOString()
         });
         saveUsers(users);
-        console.log(`✅ New user: ${userId} (@${username}) - Total: ${users.size}`);
-        
+        console.log(`✅ New user: ${userId} (@${username})`);
         await notifyAdminNewUser(userId, username, firstName);
     } else {
-        // Update existing user
         const existing = users.get(userId);
         users.set(userId, { 
             ...existing,
@@ -210,7 +188,7 @@ bot.start(async (ctx) => {
     
     if (userId === ADMIN_ID) {
         await ctx.reply(
-            `🔧 <b>Admin Panel</b>\n\nWelcome back!\n👥 Users: ${users.size}\n📦 Orders: ${pendingOrders.size}`,
+            `🔧 <b>Admin Panel</b>\n\nWelcome!\n👥 Users: ${users.size}\n📦 Orders: ${pendingOrders.size}`,
             { parse_mode: 'HTML', ...adminMenu }
         );
     } else {
@@ -472,7 +450,7 @@ bot.action('admin_test', async (ctx) => {
 });
 
 // ============================================
-// IMPORT USERS - WORKING VERSION
+// IMPORT USERS (PIPE format | )
 // ============================================
 bot.action('admin_import', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -485,20 +463,20 @@ bot.action('admin_import', async (ctx) => {
     
     await ctx.editMessageText(
         `<b>➕ IMPORT USERS</b>\n\n` +
-        `Send me user data in this format (one per line):\n\n` +
-        `<code>username\t123456789</code>\n\n` +
-        `Or just user ID:\n\n` +
+        `Send user data (one per line):\n\n` +
+        `<b>Format:</b> <code>username | userid</code>\n\n` +
+        `<b>Example:</b>\n` +
+        `<code>john_doe | 123456789</code>\n` +
+        `<code>jane_smith | 987654321</code>\n\n` +
+        `<b>Or just user ID:</b>\n` +
         `<code>123456789</code>\n\n` +
-        `Example from your sheet:\n` +
-        `<code>john_doe\t123456789</code>\n` +
-        `<code>jane_smith\t987654321</code>\n\n` +
         `Type /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
 });
 
 // ============================================
-// EXPORT USERS - WORKING VERSION
+// EXPORT USERS (TAB format for Google Sheets)
 // ============================================
 bot.action('admin_export', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -522,7 +500,7 @@ bot.action('admin_export', async (ctx) => {
         const tempFile = path.join(__dirname, 'export_users.txt');
         fs.writeFileSync(tempFile, exportText, 'utf8');
         await ctx.replyWithDocument({ source: tempFile }, { 
-            caption: `📤 Exported ${users.size} users\n\nPaste into Google Sheets - auto splits into 2 columns` 
+            caption: `📤 Exported ${users.size} users\n\nPaste into Google Sheets → Auto 2 columns` 
         });
         fs.unlinkSync(tempFile);
     } catch (err) {
@@ -604,11 +582,13 @@ bot.action('announce_cancel_btn', async (ctx) => {
     await ctx.editMessageText('❌ Announcement cancelled.', { parse_mode: 'HTML' });
 });
 
-// Handle text input for announcements and import
+// ============================================
+// TEXT HANDLER (Import + Announcement)
+// ============================================
 bot.on('text', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     
-    // Handle IMPORT mode
+    // ========== IMPORT MODE ==========
     if (importMode) {
         if (ctx.message.text === '/cancel') {
             importMode = false;
@@ -628,9 +608,9 @@ bot.on('text', async (ctx) => {
             let userId = null;
             let username = null;
             
-            // Check for TAB separator
-            if (trimmed.includes('\t')) {
-                const parts = trimmed.split('\t');
+            // Format: username | userid
+            if (trimmed.includes('|')) {
+                const parts = trimmed.split('|');
                 if (parts.length >= 2) {
                     const userPart = parts[0].trim();
                     const idPart = parts[1].trim();
@@ -640,7 +620,7 @@ bot.on('text', async (ctx) => {
                     }
                 }
             }
-            // Just user ID
+            // Format: just userid
             else if (/^\d+$/.test(trimmed)) {
                 userId = parseInt(trimmed);
                 username = `user_${userId}`;
@@ -655,15 +635,18 @@ bot.on('text', async (ctx) => {
                         imported: true
                     });
                     added++;
-                } else if (username && username !== 'no_username') {
+                    console.log(`✅ Imported: ${userId} (${username})`);
+                } else if (username && !username.startsWith('user_')) {
                     const existing = users.get(userId);
                     if (existing.username !== username) {
                         users.set(userId, { ...existing, username: username });
                         updated++;
+                        console.log(`✅ Updated: ${userId} -> ${username}`);
                     }
                 }
             } else {
                 invalid++;
+                console.log(`❌ Invalid line: ${trimmed}`);
             }
         }
         
@@ -674,16 +657,16 @@ bot.on('text', async (ctx) => {
         importMode = false;
         
         let resultMsg = `<b>✅ Import Complete!</b>\n\n`;
-        resultMsg += `Added: ${added} new users\n`;
-        resultMsg += `Updated: ${updated} users\n`;
-        if (invalid > 0) resultMsg += `Invalid lines: ${invalid}\n\n`;
-        resultMsg += `Total users now: ${users.size}`;
+        resultMsg += `➕ Added: ${added} new users\n`;
+        resultMsg += `🔄 Updated: ${updated} users\n`;
+        if (invalid > 0) resultMsg += `❌ Invalid lines: ${invalid}\n\n`;
+        resultMsg += `📊 Total users now: ${users.size}`;
         
         await ctx.reply(resultMsg, { parse_mode: 'HTML', ...adminMenu });
         return;
     }
     
-    // Handle ANNOUNCEMENT steps
+    // ========== ANNOUNCEMENT MODE ==========
     if (!announceSession.active) return;
     if (ctx.message.text === '/cancel') {
         announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
@@ -691,7 +674,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Step: receiving user IDs for specific announcement
+    // Step: receiving user IDs
     if (announceSession.step === 'usernames') {
         const lines = ctx.message.text.split('\n');
         const found = [];
@@ -723,13 +706,13 @@ bot.on('text', async (ctx) => {
         if (notFound.length > 0) {
             reply += `⚠️ Not found: ${notFound.join(', ')}\n\n`;
         }
-        reply += `Now send your announcement (text or photo with caption).`;
+        reply += `📝 Now send your announcement (text or photo with caption).`;
         
         await ctx.reply(reply);
         return;
     }
     
-    // Step: receiving text message for announcement
+    // Step: receiving text message
     if (announceSession.step === 'media' && announceSession.targets.length > 0 && !announceSession.waitingForConfirmation) {
         announceSession.message = ctx.message.text;
         announceSession.photo = null;
@@ -750,7 +733,9 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// Handle photo for announcement
+// ============================================
+// PHOTO HANDLER (Announcement)
+// ============================================
 bot.on('photo', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     if (!announceSession.active) return;
@@ -777,7 +762,9 @@ bot.on('photo', async (ctx) => {
     await ctx.reply(previewText, { parse_mode: 'HTML', ...confirmKeyboard });
 });
 
-// Send announcement
+// ============================================
+// SEND ANNOUNCEMENT
+// ============================================
 bot.action('announce_send_msg', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
         await ctx.answerCbQuery('Admin only');
@@ -815,9 +802,9 @@ bot.action('announce_send_msg', async (ctx) => {
     
     await ctx.reply(
         `<b>✅ Announcement Sent!</b>\n\n` +
-        `<b>Sent:</b> ${sent}\n` +
-        `<b>Failed:</b> ${failed}\n\n` +
-        `<b>Targeted:</b> ${announceSession.targets.length} users`,
+        `<b>📤 Sent:</b> ${sent}\n` +
+        `<b>❌ Failed:</b> ${failed}\n\n` +
+        `<b>🎯 Targeted:</b> ${announceSession.targets.length} users`,
         { parse_mode: 'HTML' }
     );
     
@@ -825,7 +812,7 @@ bot.action('announce_send_msg', async (ctx) => {
 });
 
 // ============================================
-// CANCEL COMMAND
+// COMMANDS
 // ============================================
 bot.command('cancel', (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
@@ -834,20 +821,14 @@ bot.command('cancel', (ctx) => {
     ctx.reply('❌ Cancelled.');
 });
 
-// ============================================
-// TEST COMMAND
-// ============================================
 bot.command('test', (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
         ctx.reply('Not available');
         return;
     }
-    ctx.reply(`✅ Bot working!\nUsers: ${users.size}\nOrders: ${pendingOrders.size}`);
+    ctx.reply(`✅ Bot working!\n👥 Users: ${users.size}\n📦 Orders: ${pendingOrders.size}`);
 });
 
-// ============================================
-// PROMO CODE
-// ============================================
 bot.command('apply', (ctx) => {
     const code = ctx.message.text.split(' ')[1];
     if (!code) {
