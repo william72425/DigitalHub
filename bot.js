@@ -309,7 +309,6 @@ bot.action(/paid_(\d+)/, async (ctx) => {
 // PAYMENT PROOF HANDLER
 // ============================================
 bot.on('photo', async (ctx) => {
-    // Check if this is a payment proof (user has waiting_proof status)
     let orderId = null;
     let order = null;
     
@@ -510,7 +509,7 @@ bot.action('admin_export', async (ctx) => {
 });
 
 // ============================================
-// ANNOUNCEMENT SYSTEM (WITH PHOTO SUPPORT)
+// ANNOUNCEMENT SYSTEM (WITH PHOTO SUPPORT - FIXED)
 // ============================================
 bot.action('admin_announce', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -555,7 +554,11 @@ bot.action('announce_all', async (ctx) => {
     
     await ctx.editMessageText(
         `📢 <b>Target: ALL ${announceSession.targets.length} USERS</b>\n\n` +
-        `Send your announcement (text or photo with caption).\n\nType /cancel to abort.`,
+        `Send your announcement.\n\n` +
+        `✅ You can send:\n` +
+        `   • Text message\n` +
+        `   • Photo with caption\n\n` +
+        `Type /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
 });
@@ -609,7 +612,6 @@ bot.on('text', async (ctx) => {
             let userId = null;
             let username = null;
             
-            // Format: username | userid
             if (trimmed.includes('|')) {
                 const parts = trimmed.split('|');
                 if (parts.length >= 2) {
@@ -620,9 +622,7 @@ bot.on('text', async (ctx) => {
                         userId = parseInt(idPart);
                     }
                 }
-            }
-            // Format: just userid
-            else if (/^\d+$/.test(trimmed)) {
+            } else if (/^\d+$/.test(trimmed)) {
                 userId = parseInt(trimmed);
                 username = `user_${userId}`;
             }
@@ -636,18 +636,16 @@ bot.on('text', async (ctx) => {
                         imported: true
                     });
                     added++;
-                    console.log(`✅ Imported: ${userId} (${username})`);
+                    console.log(`✅ Imported: ${userId}`);
                 } else if (username && !username.startsWith('user_')) {
                     const existing = users.get(userId);
                     if (existing.username !== username) {
                         users.set(userId, { ...existing, username: username });
                         updated++;
-                        console.log(`✅ Updated: ${userId} -> ${username}`);
                     }
                 }
             } else {
                 invalid++;
-                console.log(`❌ Invalid line: ${trimmed}`);
             }
         }
         
@@ -735,38 +733,68 @@ bot.on('text', async (ctx) => {
 });
 
 // ============================================
-// PHOTO HANDLER (Announcement with photo)
+// PHOTO HANDLER (Announcement with photo - FIXED)
 // ============================================
 bot.on('photo', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
-    if (!announceSession.active) return;
-    if (announceSession.step !== 'media') return;
-    if (announceSession.targets.length === 0) return;
-    if (announceSession.waitingForConfirmation) return;
+    
+    // If in announcement mode, handle as announcement
+    if (announceSession.active && announceSession.step === 'media' && announceSession.targets.length > 0 && !announceSession.waitingForConfirmation) {
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
+        announceSession.photo = photo.file_id;
+        announceSession.message = ctx.message.caption || '';
+        announceSession.waitingForConfirmation = true;
+        
+        const confirmKeyboard = Markup.inlineKeyboard([
+            [Markup.button.callback('✅ SEND NOW', 'announce_send_msg')],
+            [Markup.button.callback('❌ Cancel', 'announce_cancel_btn')]
+        ]);
+        
+        let previewText = `📢 <b>Preview</b>\n\n<b>Target:</b> ${announceSession.targets.length} users\n\n`;
+        if (announceSession.message) {
+            previewText += `<b>Caption:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        } else {
+            previewText += `<i>No caption</i>\n\n`;
+        }
+        previewText += `Send now?`;
+        
+        await ctx.reply(previewText, { parse_mode: 'HTML', ...confirmKeyboard });
+        return;
+    }
+    
+    // Otherwise, this is a payment proof
+    let orderId = null;
+    let order = null;
+    
+    for (const [id, o] of pendingOrders) {
+        if (o.userId === ctx.from.id && o.status === 'waiting_proof') {
+            orderId = id;
+            order = o;
+            break;
+        }
+    }
+    
+    if (!order) return;
     
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    announceSession.photo = photo.file_id;
-    announceSession.message = ctx.message.caption || '';
-    announceSession.waitingForConfirmation = true;
+    pendingOrders.set(orderId, { ...order, status: 'proof_submitted', proofId: photo.file_id });
+    saveOrders(pendingOrders);
     
-    const confirmKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('✅ SEND NOW', 'announce_send_msg')],
-        [Markup.button.callback('❌ Cancel', 'announce_cancel_btn')]
+    const adminKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('✅ Confirm', `confirm_${orderId}`)],
+        [Markup.button.callback('❌ Cancel', `cancel_${orderId}`)]
     ]);
     
-    let previewText = `📢 <b>Preview</b>\n\n<b>Target:</b> ${announceSession.targets.length} users\n\n`;
-    if (announceSession.message) {
-        previewText += `<b>Caption:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    } else {
-        previewText += `<i>No caption</i>\n\n`;
-    }
-    previewText += `Send now?`;
+    await bot.telegram.sendPhoto(ADMIN_ID, photo.file_id, {
+        caption: `🆕 ORDER #${orderId}\n\n👤 @${order.username || 'N/A'} | ${order.userId}\n🛍️ ${order.product}\n💰 ${order.price.toLocaleString()} MMK`,
+        ...adminKeyboard
+    });
     
-    await ctx.reply(previewText, { parse_mode: 'HTML', ...confirmKeyboard });
+    await ctx.reply(`✅ Payment proof received! Order #${orderId}\n\n⏳ Admin will confirm soon.`);
 });
 
 // ============================================
-// SEND ANNOUNCEMENT (Text or Photo)
+// SEND ANNOUNCEMENT (Text or Photo - FIXED)
 // ============================================
 bot.action('announce_send_msg', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -789,11 +817,13 @@ bot.action('announce_send_msg', async (ctx) => {
     for (const userId of announceSession.targets) {
         try {
             if (announceSession.photo) {
+                // Send photo with caption (preserves formatting)
                 await bot.telegram.sendPhoto(userId, announceSession.photo, {
                     caption: announceSession.message,
                     parse_mode: 'HTML'
                 });
             } else {
+                // Send text message (preserves HTML formatting)
                 await bot.telegram.sendMessage(userId, announceSession.message, { parse_mode: 'HTML' });
             }
             sent++;
