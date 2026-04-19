@@ -309,6 +309,7 @@ bot.action(/paid_(\d+)/, async (ctx) => {
 // PAYMENT PROOF HANDLER
 // ============================================
 bot.on('photo', async (ctx) => {
+    // Check if this is a payment proof (user has waiting_proof status)
     let orderId = null;
     let order = null;
     
@@ -509,7 +510,7 @@ bot.action('admin_export', async (ctx) => {
 });
 
 // ============================================
-// ANNOUNCEMENT SYSTEM
+// ANNOUNCEMENT SYSTEM (WITH PHOTO SUPPORT)
 // ============================================
 bot.action('admin_announce', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -554,7 +555,7 @@ bot.action('announce_all', async (ctx) => {
     
     await ctx.editMessageText(
         `📢 <b>Target: ALL ${announceSession.targets.length} USERS</b>\n\n` +
-        `Send your announcement (text or photo).\n\nType /cancel to abort.`,
+        `Send your announcement (text or photo with caption).\n\nType /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
 });
@@ -674,7 +675,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Step: receiving user IDs
+    // Step: receiving user IDs for specific announcement
     if (announceSession.step === 'usernames') {
         const lines = ctx.message.text.split('\n');
         const found = [];
@@ -712,7 +713,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Step: receiving text message
+    // Step: receiving text message for announcement
     if (announceSession.step === 'media' && announceSession.targets.length > 0 && !announceSession.waitingForConfirmation) {
         announceSession.message = ctx.message.text;
         announceSession.photo = null;
@@ -734,7 +735,7 @@ bot.on('text', async (ctx) => {
 });
 
 // ============================================
-// PHOTO HANDLER (Announcement)
+// PHOTO HANDLER (Announcement with photo)
 // ============================================
 bot.on('photo', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
@@ -756,6 +757,8 @@ bot.on('photo', async (ctx) => {
     let previewText = `📢 <b>Preview</b>\n\n<b>Target:</b> ${announceSession.targets.length} users\n\n`;
     if (announceSession.message) {
         previewText += `<b>Caption:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    } else {
+        previewText += `<i>No caption</i>\n\n`;
     }
     previewText += `Send now?`;
     
@@ -763,7 +766,7 @@ bot.on('photo', async (ctx) => {
 });
 
 // ============================================
-// SEND ANNOUNCEMENT
+// SEND ANNOUNCEMENT (Text or Photo)
 // ============================================
 bot.action('announce_send_msg', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
