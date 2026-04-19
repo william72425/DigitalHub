@@ -3,14 +3,14 @@ const fs = require('fs');
 const path = require('path');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = 1379973354; // Your Telegram ID
+const ADMIN_ID = 1379973354;
 
 // File paths
 const USERS_FILE = path.join(__dirname, 'users.json');
 const ORDERS_FILE = path.join(__dirname, 'orders.json');
 
 // ============================================
-// PERSISTENT STORAGE
+// PERSISTENT STORAGE - PROPER WORKING VERSION
 // ============================================
 function loadUsers() {
     try {
@@ -21,10 +21,15 @@ function loadUsers() {
             for (const [key, value] of Object.entries(parsed)) {
                 usersMap.set(parseInt(key), value);
             }
-            console.log(`✅ Loaded ${usersMap.size} users`);
+            console.log(`✅ Loaded ${usersMap.size} users from file`);
             return usersMap;
+        } else {
+            console.log('📁 No users file found, creating new one');
+            fs.writeFileSync(USERS_FILE, JSON.stringify({}, null, 2));
         }
-    } catch (err) {}
+    } catch (err) {
+        console.error('Error loading users:', err.message);
+    }
     return new Map();
 }
 
@@ -32,8 +37,12 @@ function saveUsers(usersMap) {
     try {
         const obj = Object.fromEntries(usersMap);
         fs.writeFileSync(USERS_FILE, JSON.stringify(obj, null, 2));
-        console.log(`✅ Saved ${usersMap.size} users`);
-    } catch (err) {}
+        console.log(`✅ Saved ${usersMap.size} users to file`);
+        return true;
+    } catch (err) {
+        console.error('Error saving users:', err.message);
+        return false;
+    }
 }
 
 function loadOrders() {
@@ -45,10 +54,14 @@ function loadOrders() {
             for (const [key, value] of Object.entries(parsed)) {
                 ordersMap.set(parseInt(key), value);
             }
-            console.log(`✅ Loaded ${ordersMap.size} orders`);
+            console.log(`✅ Loaded ${ordersMap.size} orders from file`);
             return ordersMap;
+        } else {
+            fs.writeFileSync(ORDERS_FILE, JSON.stringify({}, null, 2));
         }
-    } catch (err) {}
+    } catch (err) {
+        console.error('Error loading orders:', err.message);
+    }
     return new Map();
 }
 
@@ -62,13 +75,25 @@ function saveOrders(ordersMap) {
 // ============================================
 // INITIALIZE
 // ============================================
-const users = loadUsers();
-const pendingOrders = loadOrders();
+let users = loadUsers();
+let pendingOrders = loadOrders();
 let orderCounter = 1000;
 
 if (pendingOrders.size > 0) {
     const maxId = Math.max(...Array.from(pendingOrders.keys()));
     orderCounter = maxId + 1;
+}
+
+// Make sure admin is always in users list
+if (!users.has(ADMIN_ID)) {
+    users.set(ADMIN_ID, {
+        username: 'william815',
+        firstName: 'Admin',
+        joined: new Date().toISOString(),
+        isAdmin: true
+    });
+    saveUsers(users);
+    console.log('✅ Admin added to users list');
 }
 
 // Announcement session
@@ -109,7 +134,6 @@ function getFinalPrice(product) {
 // NEW USER NOTIFICATION (TAB FORMAT FOR SHEETS)
 // ============================================
 async function notifyAdminNewUser(userId, username, firstName) {
-    // TAB character between username and ID for 2-column paste in Google Sheets
     const usernameDisplay = username || 'no_username';
     const tabSeparated = `${usernameDisplay}\t${userId}`;
     
@@ -169,12 +193,11 @@ bot.start(async (ctx) => {
             lastActive: new Date().toISOString()
         });
         saveUsers(users);
-        console.log(`✅ New user: ${userId} (@${username})`);
+        console.log(`✅ New user: ${userId} (@${username}) - Total: ${users.size}`);
         
-        // Send TAB-formatted notification to admin
         await notifyAdminNewUser(userId, username, firstName);
     } else {
-        // Update existing user (username might have changed)
+        // Update existing user
         const existing = users.get(userId);
         users.set(userId, { 
             ...existing,
@@ -449,7 +472,7 @@ bot.action('admin_test', async (ctx) => {
 });
 
 // ============================================
-// IMPORT USERS (TAB or ID format)
+// IMPORT USERS - WORKING VERSION
 // ============================================
 bot.action('admin_import', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -462,18 +485,20 @@ bot.action('admin_import', async (ctx) => {
     
     await ctx.editMessageText(
         `<b>➕ IMPORT USERS</b>\n\n` +
-        `Send me user data (one per line):\n\n` +
-        `<b>Format 1 (TAB - from Sheets):</b>\n` +
+        `Send me user data in this format (one per line):\n\n` +
         `<code>username\t123456789</code>\n\n` +
-        `<b>Format 2 (Just ID):</b>\n` +
+        `Or just user ID:\n\n` +
         `<code>123456789</code>\n\n` +
+        `Example from your sheet:\n` +
+        `<code>john_doe\t123456789</code>\n` +
+        `<code>jane_smith\t987654321</code>\n\n` +
         `Type /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
 });
 
 // ============================================
-// EXPORT USERS (TAB format for Sheets)
+// EXPORT USERS - WORKING VERSION
 // ============================================
 bot.action('admin_export', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -497,7 +522,7 @@ bot.action('admin_export', async (ctx) => {
         const tempFile = path.join(__dirname, 'export_users.txt');
         fs.writeFileSync(tempFile, exportText, 'utf8');
         await ctx.replyWithDocument({ source: tempFile }, { 
-            caption: `📤 Exported ${users.size} users\n\nPaste into Google Sheets → Auto splits into 2 columns` 
+            caption: `📤 Exported ${users.size} users\n\nPaste into Google Sheets - auto splits into 2 columns` 
         });
         fs.unlinkSync(tempFile);
     } catch (err) {
@@ -594,6 +619,7 @@ bot.on('text', async (ctx) => {
         const lines = ctx.message.text.split('\n');
         let added = 0;
         let updated = 0;
+        let invalid = 0;
         
         for (const line of lines) {
             const trimmed = line.trim();
@@ -602,23 +628,25 @@ bot.on('text', async (ctx) => {
             let userId = null;
             let username = null;
             
-            // Format 1: TAB separated "username\t123456789"
+            // Check for TAB separator
             if (trimmed.includes('\t')) {
                 const parts = trimmed.split('\t');
-                const userPart = parts[0].trim();
-                const idPart = parts[1].trim();
-                username = userPart.replace(/^@/, '');
-                if (/^\d+$/.test(idPart)) {
-                    userId = parseInt(idPart);
+                if (parts.length >= 2) {
+                    const userPart = parts[0].trim();
+                    const idPart = parts[1].trim();
+                    username = userPart.replace(/^@/, '');
+                    if (/^\d+$/.test(idPart)) {
+                        userId = parseInt(idPart);
+                    }
                 }
             }
-            // Format 2: Just user ID
+            // Just user ID
             else if (/^\d+$/.test(trimmed)) {
                 userId = parseInt(trimmed);
                 username = `user_${userId}`;
             }
             
-            if (userId && !isNaN(userId)) {
+            if (userId && !isNaN(userId) && userId > 0) {
                 if (!users.has(userId)) {
                     users.set(userId, {
                         username: username,
@@ -627,24 +655,31 @@ bot.on('text', async (ctx) => {
                         imported: true
                     });
                     added++;
-                } else if (username) {
+                } else if (username && username !== 'no_username') {
                     const existing = users.get(userId);
-                    users.set(userId, { ...existing, username: username });
-                    updated++;
+                    if (existing.username !== username) {
+                        users.set(userId, { ...existing, username: username });
+                        updated++;
+                    }
                 }
+            } else {
+                invalid++;
             }
         }
         
-        saveUsers(users);
+        if (added > 0 || updated > 0) {
+            saveUsers(users);
+        }
+        
         importMode = false;
         
-        await ctx.reply(
-            `<b>✅ Import Complete!</b>\n\n` +
-            `Added: ${added} new users\n` +
-            `Updated: ${updated} users\n\n` +
-            `Total users now: ${users.size}`,
-            { parse_mode: 'HTML', ...adminMenu }
-        );
+        let resultMsg = `<b>✅ Import Complete!</b>\n\n`;
+        resultMsg += `Added: ${added} new users\n`;
+        resultMsg += `Updated: ${updated} users\n`;
+        if (invalid > 0) resultMsg += `Invalid lines: ${invalid}\n\n`;
+        resultMsg += `Total users now: ${users.size}`;
+        
+        await ctx.reply(resultMsg, { parse_mode: 'HTML', ...adminMenu });
         return;
     }
     
@@ -660,6 +695,7 @@ bot.on('text', async (ctx) => {
     if (announceSession.step === 'usernames') {
         const lines = ctx.message.text.split('\n');
         const found = [];
+        const notFound = [];
         
         for (const line of lines) {
             const trimmed = line.trim();
@@ -669,6 +705,8 @@ bot.on('text', async (ctx) => {
                 const userId = parseInt(trimmed);
                 if (users.has(userId)) {
                     found.push(userId);
+                } else {
+                    notFound.push(trimmed);
                 }
             }
         }
@@ -681,7 +719,13 @@ bot.on('text', async (ctx) => {
         announceSession.targets = found;
         announceSession.step = 'media';
         
-        await ctx.reply(`✅ Target: ${found.length} users\n\nNow send your announcement (text or photo with caption).`);
+        let reply = `✅ Target: ${found.length} users\n\n`;
+        if (notFound.length > 0) {
+            reply += `⚠️ Not found: ${notFound.join(', ')}\n\n`;
+        }
+        reply += `Now send your announcement (text or photo with caption).`;
+        
+        await ctx.reply(reply);
         return;
     }
     
