@@ -1,252 +1,391 @@
 const { Telegraf, Markup } = require('telegraf');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = 1379973354;
+const ADMIN_ID = 1379973354; // Your Telegram ID
 
-// Simple storage
+// In-memory storage (resets on redeploy - users will reappear when they /start again)
 const users = new Map();
-let announceMode = false;
-let announceTargets = [];
-let announceMessage = '';
-let announcePhoto = null;
 
-console.log('Bot starting...');
+console.log('========================================');
+console.log('🤖 Digital Hub Bot Running');
+console.log(`👑 Admin ID: ${ADMIN_ID}`);
+console.log('========================================');
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// ============================================
-// START COMMAND
-// ============================================
-bot.start((ctx) => {
+// Track users when they start
+bot.start(async (ctx) => {
     const userId = ctx.from.id;
     const username = ctx.from.username;
     const firstName = ctx.from.first_name;
     
-    // Save user
     if (!users.has(userId)) {
-        users.set(userId, { username, firstName, joined: new Date().toISOString() });
-        console.log(`New user: ${userId} @${username}`);
+        users.set(userId, {
+            username: username,
+            firstName: firstName,
+            joined: new Date().toISOString()
+        });
+        console.log(`✅ New user saved: ${userId} (@${username})`);
     }
     
-    // Admin menu
+    // Different message for admin vs normal users
     if (userId === ADMIN_ID) {
         const adminMenu = Markup.inlineKeyboard([
-            [Markup.button.callback('👥 Show Users', 'admin_users')],
-            [Markup.button.callback('📢 Announce', 'admin_announce')],
-            [Markup.button.callback('🧪 Test', 'admin_test')]
+            [Markup.button.callback('👥 Show All Users', 'admin_users')],
+            [Markup.button.callback('📢 Announcement', 'admin_announce')],
+            [Markup.button.callback('🧪 Test Bot', 'admin_test')]
         ]);
-        ctx.reply(`🔧 Admin Panel\nUsers: ${users.size}`, adminMenu);
+        
+        await ctx.reply(
+            `🔧 <b>Admin Panel</b>\n\n` +
+            `Welcome back, ${firstName}!\n` +
+            `Total users in database: ${users.size}\n\n` +
+            `Use the buttons below.`,
+            { parse_mode: 'HTML', ...adminMenu }
+        );
     } else {
-        ctx.reply(`Welcome ${firstName}! Bot is working.`);
+        await ctx.reply(
+            `🎉 <b>Welcome to Digital Hub Store!</b>\n\n` +
+            `Hello ${firstName}!\n\n` +
+            `Our store will be open soon.\n` +
+            `Contact @will815 for inquiries.`,
+            { parse_mode: 'HTML' }
+        );
     }
 });
 
 // ============================================
-// ADMIN ACTIONS
+// ADMIN BUTTON HANDLERS (Only admin can use)
 // ============================================
 
-// Show users
-bot.action('admin_users', (ctx) => {
+// Show all users
+bot.action('admin_users', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
-        ctx.answerCbQuery('Admin only');
+        await ctx.answerCbQuery('⛔ Admin only');
         return;
     }
-    ctx.answerCbQuery();
+    await ctx.answerCbQuery();
     
     if (users.size === 0) {
-        ctx.reply('No users yet.');
+        await ctx.reply('📊 No users in database yet.\n\nUsers appear when they send /start.');
         return;
     }
     
-    let text = `👥 USERS (${users.size})\n\n`;
-    let i = 1;
-    for (const [id, data] of users) {
-        text += `${i}. ${data.firstName} (@${data.username || 'no username'})\n`;
-        text += `   ID: ${id}\n\n`;
-        i++;
+    let message = `👥 <b>USER LIST</b> (${users.size} total)\n\n`;
+    let count = 1;
+    
+    for (const [userId, data] of users) {
+        const username = data.username ? `@${data.username}` : 'No username';
+        const joinedDate = new Date(data.joined).toLocaleString();
+        message += `${count}. <b>${data.firstName}</b> (${username})\n`;
+        message += `   🆔 ID: <code>${userId}</code>\n`;
+        message += `   📅 Joined: ${joinedDate}\n\n`;
+        count++;
+        
+        // Telegram message limit - split if too long
+        if (message.length > 3000) {
+            await ctx.reply(message, { parse_mode: 'HTML' });
+            message = '';
+        }
     }
-    ctx.reply(text);
+    
+    if (message) {
+        await ctx.reply(message, { parse_mode: 'HTML' });
+    }
 });
 
-// Test
-bot.action('admin_test', (ctx) => {
+// Test bot
+bot.action('admin_test', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
-        ctx.answerCbQuery('Admin only');
+        await ctx.answerCbQuery('⛔ Admin only');
         return;
     }
-    ctx.answerCbQuery();
-    ctx.reply('✅ Bot is working!');
+    await ctx.answerCbQuery();
+    await ctx.reply('✅ Bot is working perfectly!\n\nSend /start to see menu.');
 });
 
-// Start announce
-bot.action('admin_announce', (ctx) => {
+// Start announcement process
+bot.action('admin_announce', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
-        ctx.answerCbQuery('Admin only');
+        await ctx.answerCbQuery('⛔ Admin only');
         return;
     }
-    ctx.answerCbQuery();
+    await ctx.answerCbQuery();
     
-    announceMode = true;
-    announceTargets = [];
-    announceMessage = '';
-    announcePhoto = null;
+    // Store session data
+    ctx.session = ctx.session || {};
+    ctx.session.announceStep = 'waiting_target';
+    ctx.session.announceTargets = [];
+    ctx.session.announceMessage = '';
     
-    const targetMenu = Markup.inlineKeyboard([
-        [Markup.button.callback('📢 ALL USERS', 'target_all')],
-        [Markup.button.callback('✏️ SPECIFIC', 'target_specific')],
+    const targetKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('📢 ALL USERS', 'announce_target_all')],
+        [Markup.button.callback('✏️ SPECIFIC USERS', 'announce_target_specific')],
         [Markup.button.callback('❌ Cancel', 'announce_cancel')]
     ]);
     
-    ctx.reply(`📢 Who should receive?`, targetMenu);
-});
-
-// Target ALL users
-bot.action('target_all', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    ctx.answerCbQuery();
-    
-    announceTargets = Array.from(users.keys());
-    ctx.editMessageText(`📢 Target: ALL ${announceTargets.length} users\n\nSend your message now.`);
-});
-
-// Target SPECIFIC users
-bot.action('target_specific', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    ctx.answerCbQuery();
-    
-    ctx.editMessageText(
-        `📢 Send usernames, one per line:\n\n` +
-        `@user1\n@user2\n@user3\n\n` +
-        `Send /cancel to stop.`
+    await ctx.reply(
+        `📢 <b>Send Announcement</b>\n\n` +
+        `Who should receive this announcement?\n\n` +
+        `• <b>ALL USERS</b> - Everyone who started the bot (${users.size} users)\n` +
+        `• <b>SPECIFIC USERS</b> - Enter usernames manually`,
+        { parse_mode: 'HTML', ...targetKeyboard }
     );
 });
 
-// Cancel announce
-bot.action('announce_cancel', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    ctx.answerCbQuery();
-    
-    announceMode = false;
-    announceTargets = [];
-    announceMessage = '';
-    announcePhoto = null;
-    
-    ctx.editMessageText('❌ Cancelled.');
-});
-
-// Handle text messages (for usernames or announcement)
-bot.on('text', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    if (!announceMode) return;
-    
-    // If we already have targets, this is the message
-    if (announceTargets.length > 0 && !announceMessage) {
-        announceMessage = ctx.message.text;
-        
-        const confirm = Markup.inlineKeyboard([
-            [Markup.button.callback('✅ SEND', 'announce_send')],
-            [Markup.button.callback('❌ Cancel', 'announce_cancel')]
-        ]);
-        
-        ctx.reply(`📢 PREVIEW\n\nTarget: ${announceTargets.length} users\n\nMessage:\n${announceMessage}\n\nSend?`, confirm);
+// Target: All users
+bot.action('announce_target_all', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+        await ctx.answerCbQuery('⛔ Admin only');
         return;
     }
+    await ctx.answerCbQuery();
     
-    // If no targets yet, parse usernames
-    if (announceTargets.length === 0) {
+    ctx.session = ctx.session || {};
+    ctx.session.announceTargets = Array.from(users.keys());
+    ctx.session.announceStep = 'waiting_message';
+    
+    await ctx.editMessageText(
+        `📢 <b>Send Announcement</b>\n\n` +
+        `Target: <b>ALL ${ctx.session.announceTargets.length} USERS</b>\n\n` +
+        `Now send me the announcement message.\n` +
+        `You can send text or a photo with caption.\n\n` +
+        `<i>Type /cancel to abort.</i>`,
+        { parse_mode: 'HTML' }
+    );
+});
+
+// Target: Specific users
+bot.action('announce_target_specific', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+        await ctx.answerCbQuery('⛔ Admin only');
+        return;
+    }
+    await ctx.answerCbQuery();
+    
+    ctx.session = ctx.session || {};
+    ctx.session.announceStep = 'waiting_usernames';
+    
+    await ctx.editMessageText(
+        `📢 <b>Send Announcement - Specific Users</b>\n\n` +
+        `Send me the list of usernames, one per line:\n\n` +
+        `<code>@username1</code>\n` +
+        `<code>@username2</code>\n` +
+        `<code>@username3</code>\n\n` +
+        `<i>Type /cancel to abort.</i>`,
+        { parse_mode: 'HTML' }
+    );
+});
+
+// Handle text input for usernames
+bot.on('text', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return;
+    if (ctx.message.text.startsWith('/')) return;
+    
+    ctx.session = ctx.session || {};
+    
+    // Handle username input
+    if (ctx.session.announceStep === 'waiting_usernames') {
         const text = ctx.message.text;
         const lines = text.split('\n');
-        const found = [];
+        const foundUsers = [];
+        const notFound = [];
         
         for (const line of lines) {
             const match = line.match(/@(\w+)/);
             if (match) {
                 const username = match[1];
-                for (const [id, data] of users) {
+                let found = false;
+                
+                for (const [userId, data] of users) {
                     if (data.username === username) {
-                        found.push(id);
+                        foundUsers.push(userId);
+                        found = true;
                         break;
                     }
+                }
+                
+                if (!found) {
+                    notFound.push(`@${username}`);
                 }
             }
         }
         
-        if (found.length === 0) {
-            ctx.reply('❌ No valid usernames found. Try again.');
+        if (foundUsers.length === 0) {
+            await ctx.reply(
+                `❌ No valid users found.\n\n` +
+                `Make sure:\n` +
+                `1. Users have started the bot with /start\n` +
+                `2. Usernames are correct\n\n` +
+                `Try again or send /cancel`
+            );
             return;
         }
         
-        announceTargets = found;
-        ctx.reply(`✅ Found ${found.length} users.\n\nNow send your announcement message.`);
+        ctx.session.announceTargets = foundUsers;
+        ctx.session.announceStep = 'waiting_message';
+        
+        let reply = `📢 <b>Target: ${foundUsers.length} users</b>\n\n`;
+        if (notFound.length > 0) {
+            reply += `⚠️ Not found: ${notFound.join(', ')}\n\n`;
+        }
+        reply += `Now send me the announcement message.\n`;
+        reply += `<i>Type /cancel to abort.</i>`;
+        
+        await ctx.reply(reply, { parse_mode: 'HTML' });
+        return;
+    }
+    
+    // Handle message input
+    if (ctx.session.announceStep === 'waiting_message' && ctx.session.announceTargets.length > 0) {
+        ctx.session.announceMessage = ctx.message.text;
+        
+        const confirmKeyboard = Markup.inlineKeyboard([
+            [Markup.button.callback('✅ SEND NOW', 'announce_send')],
+            [Markup.button.callback('❌ Cancel', 'announce_cancel')]
+        ]);
+        
+        await ctx.reply(
+            `📢 <b>Announcement Preview</b>\n\n` +
+            `<b>Target:</b> ${ctx.session.announceTargets.length} users\n\n` +
+            `<b>Message:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${ctx.session.announceMessage}\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `Click SEND NOW to broadcast.`,
+            { parse_mode: 'HTML', ...confirmKeyboard }
+        );
     }
 });
 
-// Handle photos
+// Handle photo for announcement
 bot.on('photo', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
-    if (!announceMode) return;
-    if (announceTargets.length === 0) return;
     
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    announcePhoto = photo.file_id;
-    announceMessage = ctx.message.caption || '';
+    ctx.session = ctx.session || {};
     
-    const confirm = Markup.inlineKeyboard([
-        [Markup.button.callback('✅ SEND', 'announce_send')],
-        [Markup.button.callback('❌ Cancel', 'announce_cancel')]
-    ]);
-    
-    ctx.reply(`📢 PREVIEW\n\nTarget: ${announceTargets.length} users\n\nPhoto + Caption: ${announceMessage}\n\nSend?`, confirm);
+    if (ctx.session.announceStep === 'waiting_message' && ctx.session.announceTargets.length > 0) {
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
+        ctx.session.announcePhoto = photo.file_id;
+        ctx.session.announceMessage = ctx.message.caption || '';
+        
+        const confirmKeyboard = Markup.inlineKeyboard([
+            [Markup.button.callback('✅ SEND NOW', 'announce_send')],
+            [Markup.button.callback('❌ Cancel', 'announce_cancel')]
+        ]);
+        
+        await ctx.reply(
+            `📢 <b>Announcement Preview</b>\n\n` +
+            `<b>Target:</b> ${ctx.session.announceTargets.length} users\n` +
+            `<b>Media:</b> Photo attached\n` +
+            `<b>Caption:</b> ${ctx.session.announceMessage || '(none)'}\n\n` +
+            `Click SEND NOW to broadcast.`,
+            { parse_mode: 'HTML', ...confirmKeyboard }
+        );
+    }
 });
 
 // Send announcement
 bot.action('announce_send', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    ctx.answerCbQuery();
+    if (ctx.from.id !== ADMIN_ID) {
+        await ctx.answerCbQuery('⛔ Admin only');
+        return;
+    }
+    await ctx.answerCbQuery();
+    
+    const targets = ctx.session?.announceTargets || [];
+    const message = ctx.session?.announceMessage || '';
+    const photo = ctx.session?.announcePhoto;
+    
+    if (targets.length === 0 || !message) {
+        await ctx.reply('❌ No announcement to send. Start over with /start');
+        return;
+    }
+    
+    await ctx.editMessageText(`📢 <b>Sending to ${targets.length} users...</b>`, { parse_mode: 'HTML' });
     
     let sent = 0;
     let failed = 0;
     
-    for (const userId of announceTargets) {
+    for (const userId of targets) {
         try {
-            if (announcePhoto) {
-                await bot.telegram.sendPhoto(userId, announcePhoto, {
-                    caption: announceMessage,
+            if (photo) {
+                await bot.telegram.sendPhoto(userId, photo, {
+                    caption: message,
                     parse_mode: 'HTML'
                 });
             } else {
-                await bot.telegram.sendMessage(userId, announceMessage, { parse_mode: 'HTML' });
+                await bot.telegram.sendMessage(userId, message, { parse_mode: 'HTML' });
             }
             sent++;
         } catch (err) {
             failed++;
+            console.log(`Failed to send to ${userId}: ${err.message}`);
         }
         await new Promise(r => setTimeout(r, 50));
     }
     
-    ctx.editMessageText(`✅ Done!\nSent: ${sent}\nFailed: ${failed}`);
+    await ctx.reply(
+        `<b>✅ Announcement Sent!</b>\n\n` +
+        `📤 Sent: ${sent}\n` +
+        `❌ Failed: ${failed}\n\n` +
+        `Targeted: ${targets.length} users`,
+        { parse_mode: 'HTML' }
+    );
     
-    // Reset
-    announceMode = false;
-    announceTargets = [];
-    announceMessage = '';
-    announcePhoto = null;
+    // Reset session
+    ctx.session.announceStep = null;
+    ctx.session.announceTargets = [];
+    ctx.session.announceMessage = '';
+    ctx.session.announcePhoto = null;
+});
+
+// Cancel announcement
+bot.action('announce_cancel', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+        await ctx.answerCbQuery('⛔ Admin only');
+        return;
+    }
+    await ctx.answerCbQuery();
+    
+    ctx.session.announceStep = null;
+    ctx.session.announceTargets = [];
+    ctx.session.announceMessage = '';
+    ctx.session.announcePhoto = null;
+    
+    await ctx.editMessageText('❌ Announcement cancelled.');
 });
 
 // Cancel command
-bot.command('cancel', (ctx) => {
+bot.command('cancel', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
-    announceMode = false;
-    announceTargets = [];
-    announceMessage = '';
-    announcePhoto = null;
-    ctx.reply('❌ Cancelled.');
+    
+    ctx.session = ctx.session || {};
+    ctx.session.announceStep = null;
+    ctx.session.announceTargets = [];
+    ctx.session.announceMessage = '';
+    ctx.session.announcePhoto = null;
+    
+    await ctx.reply('❌ Operation cancelled.');
+});
+
+// Test command for admin
+bot.command('test', (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+        ctx.reply('❌ Not available');
+        return;
+    }
+    ctx.reply('✅ Bot is working!');
 });
 
 // Launch
 bot.launch()
-    .then(() => console.log('✅ Bot running!'))
-    .catch(err => console.error('Error:', err));
+    .then(() => {
+        console.log('========================================');
+        console.log('✅ BOT RUNNING!');
+        console.log('========================================');
+    })
+    .catch((err) => {
+        console.error('❌ Error:', err);
+        process.exit(1);
+    });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
