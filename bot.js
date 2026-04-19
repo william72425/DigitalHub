@@ -1,14 +1,84 @@
 const { Telegraf, Markup } = require('telegraf');
+const fs = require('fs');
+const path = require('path');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = 1379973354; // Your Telegram ID
+const ADMIN_ID = 1379973354;
+
+// File paths for persistent storage
+const USERS_FILE = path.join(__dirname, 'users.json');
+const ORDERS_FILE = path.join(__dirname, 'orders.json');
 
 // ============================================
-// DATA STORAGE
+// PERSISTENT STORAGE FUNCTIONS
 // ============================================
-const users = new Map();
-const pendingOrders = new Map();
+function loadUsers() {
+    try {
+        if (fs.existsSync(USERS_FILE)) {
+            const data = fs.readFileSync(USERS_FILE, 'utf8');
+            const parsed = JSON.parse(data);
+            const usersMap = new Map();
+            for (const [key, value] of Object.entries(parsed)) {
+                usersMap.set(parseInt(key), value);
+            }
+            console.log(`✅ Loaded ${usersMap.size} users from file`);
+            return usersMap;
+        }
+    } catch (err) {
+        console.error('Error loading users:', err.message);
+    }
+    return new Map();
+}
+
+function saveUsers(usersMap) {
+    try {
+        const obj = Object.fromEntries(usersMap);
+        fs.writeFileSync(USERS_FILE, JSON.stringify(obj, null, 2));
+        console.log(`✅ Saved ${usersMap.size} users to file`);
+    } catch (err) {
+        console.error('Error saving users:', err.message);
+    }
+}
+
+function loadOrders() {
+    try {
+        if (fs.existsSync(ORDERS_FILE)) {
+            const data = fs.readFileSync(ORDERS_FILE, 'utf8');
+            const parsed = JSON.parse(data);
+            const ordersMap = new Map();
+            for (const [key, value] of Object.entries(parsed)) {
+                ordersMap.set(parseInt(key), value);
+            }
+            console.log(`✅ Loaded ${ordersMap.size} orders from file`);
+            return ordersMap;
+        }
+    } catch (err) {
+        console.error('Error loading orders:', err.message);
+    }
+    return new Map();
+}
+
+function saveOrders(ordersMap) {
+    try {
+        const obj = Object.fromEntries(ordersMap);
+        fs.writeFileSync(ORDERS_FILE, JSON.stringify(obj, null, 2));
+        console.log(`✅ Saved ${ordersMap.size} orders to file`);
+    } catch (err) {
+        console.error('Error saving orders:', err.message);
+    }
+}
+
+// ============================================
+// INITIALIZE
+// ============================================
+const users = loadUsers();
+const pendingOrders = loadOrders();
 let orderCounter = 1000;
+
+if (pendingOrders.size > 0) {
+    const maxId = Math.max(...Array.from(pendingOrders.keys()));
+    orderCounter = maxId + 1;
+}
 
 // Announcement session
 let announceSession = {
@@ -16,10 +86,10 @@ let announceSession = {
     targets: [],
     message: '',
     photo: null,
-    step: null // 'target', 'message'
+    step: null,
+    waitingForConfirmation: false
 };
 
-// Products Data
 const products = [
     { id: 1, name: 'ChatGPT Plus', category: 'AI Tools', price: 120000, discount: 46, duration: '1 month', logo: '🤖' },
     { id: 2, name: 'Canva Pro', category: 'Photo Editing', price: 8000, discount: 25, duration: '1 month', logo: '🎨' },
@@ -29,15 +99,15 @@ const products = [
 ];
 
 console.log('========================================');
-console.log('🤖 Digital Hub Bot Running');
+console.log('🤖 Digital Hub Bot Starting...');
 console.log(`👑 Admin ID: ${ADMIN_ID}`);
+console.log(`📊 Users in DB: ${users.size}`);
+console.log(`📊 Orders in DB: ${pendingOrders.size}`);
 console.log('========================================');
 
 const bot = new Telegraf(BOT_TOKEN);
+bot.telegram.deleteWebhook().catch(() => {});
 
-// ============================================
-// HELPERS
-// ============================================
 function getFinalPrice(product) {
     return product.price - (product.price * product.discount / 100);
 }
@@ -49,7 +119,6 @@ const mainMenu = Markup.inlineKeyboard([
     [Markup.button.callback('🛍️ Products', 'menu_products')],
     [Markup.button.callback('🔥 Discounts', 'menu_discounts')],
     [Markup.button.callback('📁 Categories', 'menu_categories')],
-    [Markup.button.callback('🎫 Promo Code', 'menu_promo')],
     [Markup.button.callback('📞 Contact', 'menu_contact')]
 ]);
 
@@ -78,25 +147,30 @@ bot.start(async (ctx) => {
     const firstName = ctx.from.first_name;
     
     if (!users.has(userId)) {
-        users.set(userId, { username, firstName, joined: new Date().toISOString() });
-        console.log(`✅ New user: ${userId} (@${username})`);
+        users.set(userId, { 
+            username: username, 
+            firstName: firstName, 
+            joined: new Date().toISOString() 
+        });
+        saveUsers(users);
+        console.log(`✅ New user: ${userId} (@${username}) - Total: ${users.size}`);
     }
     
     if (userId === ADMIN_ID) {
         await ctx.reply(
-            `🔧 <b>Admin Panel</b>\n\nWelcome back, ${firstName}!\nUsers: ${users.size}`,
+            `🔧 <b>Admin Panel</b>\n\nWelcome back, ${firstName}!\nUsers: ${users.size}\nOrders: ${pendingOrders.size}`,
             { parse_mode: 'HTML', ...adminMenu }
         );
     } else {
         await ctx.reply(
-            `🎉 <b>Welcome to Digital Hub Store!</b>\n\nHello ${firstName}!\n\nUse the buttons below to browse products.`,
+            `🎉 <b>Welcome to Digital Hub Store!</b>\n\nHello ${firstName}!\n\nUse the buttons below.`,
             { parse_mode: 'HTML', ...mainMenu }
         );
     }
 });
 
 // ============================================
-// MAIN MENU HANDLERS
+// MENU HANDLERS
 // ============================================
 bot.action('menu_products', async (ctx) => {
     await ctx.answerCbQuery();
@@ -118,14 +192,6 @@ bot.action('menu_categories', async (ctx) => {
     let msg = '<b>📁 Categories</b>\n\n';
     cats.forEach(c => { msg += `• ${c}\n`; });
     await ctx.editMessageText(msg, { parse_mode: 'HTML', ...productsKeyboard });
-});
-
-bot.action('menu_promo', async (ctx) => {
-    await ctx.answerCbQuery();
-    await ctx.editMessageText(
-        '<b>🎫 Promo Code</b>\n\nUse /apply CODE\n\nAvailable: HUBBY10, HUBBY20, WELCOME, FIRSTBUY',
-        { parse_mode: 'HTML' }
-    );
 });
 
 bot.action('menu_contact', async (ctx) => {
@@ -156,15 +222,17 @@ bot.action(/buy_(\d+)/, async (ctx) => {
     if (!product) return;
     
     const finalPrice = getFinalPrice(product);
-    const orderId = ++orderCounter;
+    const orderId = orderCounter++;
     
     pendingOrders.set(orderId, {
         userId: ctx.from.id,
         username: ctx.from.username,
         product: product.name,
         price: finalPrice,
-        status: 'pending'
+        status: 'pending',
+        createdAt: new Date().toISOString()
     });
+    saveOrders(pendingOrders);
     
     const buyKeyboard = Markup.inlineKeyboard([
         [Markup.button.callback('✅ I HAVE PAID', `paid_${orderId}`)],
@@ -173,12 +241,12 @@ bot.action(/buy_(\d+)/, async (ctx) => {
     
     await ctx.editMessageText(
         `<b>🛒 Order Summary</b>\n\n` +
+        `<b>Order ID:</b> #${orderId}\n` +
         `<b>Product:</b> ${product.name}\n` +
         `<b>Duration:</b> ${product.duration}\n` +
         `<b>Original:</b> ${product.price.toLocaleString()} MMK\n` +
         `<b>Discount:</b> -${product.discount}%\n` +
         `<b>Final:</b> ${finalPrice.toLocaleString()} MMK\n\n` +
-        `<b>Order ID:</b> #${orderId}\n\n` +
         `<b>💳 Payment:</b>\n• KBZ: 0987654321\n• WavePay: 09798268154\n\n` +
         `<i>Click "I HAVE PAID" after payment and send your proof.</i>`,
         { parse_mode: 'HTML', ...buyKeyboard }
@@ -196,6 +264,7 @@ bot.action(/paid_(\d+)/, async (ctx) => {
     }
     
     pendingOrders.set(orderId, { ...order, status: 'waiting_proof' });
+    saveOrders(pendingOrders);
     
     await ctx.reply(
         `<b>📸 Send Payment Proof</b>\n\n` +
@@ -225,8 +294,8 @@ bot.on('photo', async (ctx) => {
     
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     pendingOrders.set(orderId, { ...order, status: 'proof_submitted', proofId: photo.file_id });
+    saveOrders(pendingOrders);
     
-    // Send to admin
     const adminKeyboard = Markup.inlineKeyboard([
         [Markup.button.callback('✅ Confirm', `confirm_${orderId}`)],
         [Markup.button.callback('❌ Cancel', `cancel_${orderId}`)]
@@ -259,6 +328,7 @@ bot.action(/confirm_(\d+)/, async (ctx) => {
     }
     
     pendingOrders.set(orderId, { ...order, status: 'confirmed' });
+    saveOrders(pendingOrders);
     
     await bot.telegram.sendMessage(
         order.userId,
@@ -288,11 +358,12 @@ bot.action(/cancel_(\d+)/, async (ctx) => {
     }
     
     pendingOrders.delete(orderId);
+    saveOrders(pendingOrders);
     await ctx.editMessageCaption(`❌ ORDER #${orderId} CANCELLED.`);
 });
 
 // ============================================
-// ADMIN COMMANDS & BUTTONS
+// ADMIN BUTTONS
 // ============================================
 bot.action('admin_users', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -302,17 +373,21 @@ bot.action('admin_users', async (ctx) => {
     await ctx.answerCbQuery();
     
     if (users.size === 0) {
-        await ctx.reply('No users yet.');
+        await ctx.reply('📊 No users in database yet.\n\nUsers appear when they send /start.');
         return;
     }
     
-    let msg = `👥 USERS (${users.size})\n\n`;
+    let msg = `👥 <b>USER LIST</b> (${users.size} total)\n\n`;
     let i = 1;
     for (const [id, data] of users) {
-        msg += `${i}. ${data.firstName} (@${data.username || 'no username'})\n   ID: ${id}\n\n`;
+        msg += `${i}. <b>${data.firstName}</b> (@${data.username || 'no username'})\n   🆔 ID: <code>${id}</code>\n   📅 Joined: ${new Date(data.joined).toLocaleDateString()}\n\n`;
         i++;
+        if (msg.length > 3000) {
+            await ctx.reply(msg, { parse_mode: 'HTML' });
+            msg = '';
+        }
     }
-    await ctx.reply(msg);
+    if (msg) await ctx.reply(msg, { parse_mode: 'HTML' });
 });
 
 bot.action('admin_stats', async (ctx) => {
@@ -322,15 +397,15 @@ bot.action('admin_stats', async (ctx) => {
     }
     await ctx.answerCbQuery();
     
-    const totalOrders = pendingOrders.size;
     const confirmed = Array.from(pendingOrders.values()).filter(o => o.status === 'confirmed').length;
     
     await ctx.reply(
         `<b>📊 STATISTICS</b>\n\n` +
-        `Users: ${users.size}\n` +
-        `Orders: ${totalOrders}\n` +
-        `Confirmed: ${confirmed}\n` +
-        `Pending: ${totalOrders - confirmed}`,
+        `<b>Total Users:</b> ${users.size}\n` +
+        `<b>Total Orders:</b> ${pendingOrders.size}\n` +
+        `<b>Confirmed Orders:</b> ${confirmed}\n` +
+        `<b>Pending Orders:</b> ${pendingOrders.size - confirmed}\n\n` +
+        `<i>Data is persistent across restarts!</i>`,
         { parse_mode: 'HTML' }
     );
 });
@@ -341,11 +416,11 @@ bot.action('admin_test', async (ctx) => {
         return;
     }
     await ctx.answerCbQuery();
-    await ctx.reply('✅ Bot is working!');
+    await ctx.reply('✅ Bot is working! Data is persistent.');
 });
 
 // ============================================
-// ANNOUNCEMENT SYSTEM
+// ANNOUNCEMENT SYSTEM (FIXED PHOTO SUPPORT)
 // ============================================
 bot.action('admin_announce', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -354,16 +429,23 @@ bot.action('admin_announce', async (ctx) => {
     }
     await ctx.answerCbQuery();
     
-    announceSession = { active: true, targets: [], message: '', photo: null, step: 'target' };
+    announceSession = { 
+        active: true, 
+        targets: [], 
+        message: '', 
+        photo: null, 
+        step: 'target',
+        waitingForConfirmation: false 
+    };
     
     const targetKeyboard = Markup.inlineKeyboard([
         [Markup.button.callback('📢 ALL USERS', 'announce_all')],
-        [Markup.button.callback('✏️ SPECIFIC', 'announce_specific')],
+        [Markup.button.callback('✏️ SPECIFIC USERS', 'announce_specific')],
         [Markup.button.callback('❌ Cancel', 'announce_cancel_btn')]
     ]);
     
     await ctx.editMessageText(
-        `📢 <b>Send Announcement</b>\n\nWho should receive it?\n\nAll Users: ${users.size} people`,
+        `📢 <b>Send Announcement</b>\n\nWho should receive it?\n\n<b>All Users:</b> ${users.size} people`,
         { parse_mode: 'HTML', ...targetKeyboard }
     );
 });
@@ -372,11 +454,22 @@ bot.action('announce_all', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     await ctx.answerCbQuery();
     
+    if (users.size === 0) {
+        await ctx.editMessageText('❌ No users in database.');
+        announceSession.active = false;
+        return;
+    }
+    
     announceSession.targets = Array.from(users.keys());
-    announceSession.step = 'message';
+    announceSession.step = 'media';
     
     await ctx.editMessageText(
-        `📢 <b>Target: ALL ${announceSession.targets.length} USERS</b>\n\nSend me your announcement message (text or photo with caption).\n\nType /cancel to abort.`,
+        `📢 <b>Target: ALL ${announceSession.targets.length} USERS</b>\n\n` +
+        `Send me your announcement.\n\n` +
+        `You can send:\n` +
+        `• 📝 Text message\n` +
+        `• 🖼️ Photo with or without caption\n\n` +
+        `Type /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
 });
@@ -388,7 +481,9 @@ bot.action('announce_specific', async (ctx) => {
     announceSession.step = 'usernames';
     
     await ctx.editMessageText(
-        `📢 <b>Send usernames</b>\n\nSend one username per line:\n\n@user1\n@user2\n@user3\n\nType /cancel to abort.`,
+        `📢 <b>Send usernames</b>\n\nSend one username per line:\n\n` +
+        `<code>@user1</code>\n<code>@user2</code>\n<code>@user3</code>\n\n` +
+        `Type /cancel to abort.`,
         { parse_mode: 'HTML' }
     );
 });
@@ -397,16 +492,16 @@ bot.action('announce_cancel_btn', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     await ctx.answerCbQuery();
     
-    announceSession = { active: false, targets: [], message: '', photo: null, step: null };
+    announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
     await ctx.editMessageText('❌ Announcement cancelled.', { parse_mode: 'HTML' });
 });
 
-// Handle announcement text input
+// Handle text for usernames
 bot.on('text', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     if (!announceSession.active) return;
     if (ctx.message.text === '/cancel') {
-        announceSession = { active: false, targets: [], message: '', photo: null, step: null };
+        announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
         await ctx.reply('❌ Cancelled.');
         return;
     }
@@ -415,34 +510,47 @@ bot.on('text', async (ctx) => {
     if (announceSession.step === 'usernames') {
         const lines = ctx.message.text.split('\n');
         const found = [];
+        const notFound = [];
         
         for (const line of lines) {
             const match = line.match(/@(\w+)/);
             if (match) {
                 const username = match[1];
+                let foundUser = false;
                 for (const [id, data] of users) {
                     if (data.username === username) {
                         found.push(id);
+                        foundUser = true;
                         break;
                     }
                 }
+                if (!foundUser) notFound.push(`@${username}`);
             }
         }
         
         if (found.length === 0) {
-            await ctx.reply('❌ No valid users found. Try again or /cancel');
+            await ctx.reply(`❌ No valid users found.\n\nMake sure users have started the bot with /start.\n\nTry again or /cancel`);
             return;
         }
         
         announceSession.targets = found;
-        announceSession.step = 'message';
-        await ctx.reply(`✅ Target: ${found.length} users\n\nNow send your announcement message.`);
+        announceSession.step = 'media';
+        
+        let reply = `✅ Target: ${found.length} users\n\n`;
+        if (notFound.length > 0) {
+            reply += `⚠️ Not found: ${notFound.join(', ')}\n\n`;
+        }
+        reply += `Now send your announcement (text or photo with caption).`;
+        
+        await ctx.reply(reply);
         return;
     }
     
-    // Step: receiving message
-    if (announceSession.step === 'message' && announceSession.targets.length > 0) {
+    // Step: receiving text message for announcement
+    if (announceSession.step === 'media' && announceSession.targets.length > 0 && !announceSession.waitingForConfirmation) {
         announceSession.message = ctx.message.text;
+        announceSession.photo = null;
+        announceSession.waitingForConfirmation = true;
         
         const confirmKeyboard = Markup.inlineKeyboard([
             [Markup.button.callback('✅ SEND NOW', 'announce_send_msg')],
@@ -450,32 +558,42 @@ bot.on('text', async (ctx) => {
         ]);
         
         await ctx.reply(
-            `📢 <b>Preview</b>\n\nTarget: ${announceSession.targets.length} users\n\nMessage:\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\nSend?`,
+            `📢 <b>Preview</b>\n\n` +
+            `<b>Target:</b> ${announceSession.targets.length} users\n\n` +
+            `<b>Message:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `Send now?`,
             { parse_mode: 'HTML', ...confirmKeyboard }
         );
     }
 });
 
-// Handle announcement photo
+// Handle photo for announcement
 bot.on('photo', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     if (!announceSession.active) return;
-    if (announceSession.step !== 'message') return;
+    if (announceSession.step !== 'media') return;
     if (announceSession.targets.length === 0) return;
+    if (announceSession.waitingForConfirmation) return;
     
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     announceSession.photo = photo.file_id;
     announceSession.message = ctx.message.caption || '';
+    announceSession.waitingForConfirmation = true;
     
     const confirmKeyboard = Markup.inlineKeyboard([
         [Markup.button.callback('✅ SEND NOW', 'announce_send_msg')],
         [Markup.button.callback('❌ Cancel', 'announce_cancel_btn')]
     ]);
     
-    await ctx.reply(
-        `📢 <b>Preview</b>\n\nTarget: ${announceSession.targets.length} users\n\nPhoto + Caption: ${announceSession.message || '(no caption)'}\n\nSend?`,
-        { parse_mode: 'HTML', ...confirmKeyboard }
-    );
+    let previewText = `📢 <b>Preview</b>\n\n<b>Target:</b> ${announceSession.targets.length} users\n\n`;
+    if (announceSession.message) {
+        previewText += `<b>Caption:</b>\n━━━━━━━━━━━━━━━━━━━━━\n${announceSession.message}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    } else {
+        previewText += `<i>No caption</i>\n\n`;
+    }
+    previewText += `Send now?`;
+    
+    await ctx.reply(previewText, { parse_mode: 'HTML', ...confirmKeyboard });
 });
 
 // Send announcement
@@ -486,10 +604,16 @@ bot.action('announce_send_msg', async (ctx) => {
     }
     await ctx.answerCbQuery();
     
+    if (!announceSession.targets.length || (!announceSession.message && !announceSession.photo)) {
+        await ctx.reply('❌ No announcement to send.');
+        announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
+        return;
+    }
+    
+    await ctx.editMessageText(`📢 <b>Sending to ${announceSession.targets.length} users...</b>`, { parse_mode: 'HTML' });
+    
     let sent = 0;
     let failed = 0;
-    
-    await ctx.editMessageText(`📢 Sending to ${announceSession.targets.length} users...`);
     
     for (const userId of announceSession.targets) {
         try {
@@ -504,14 +628,41 @@ bot.action('announce_send_msg', async (ctx) => {
             sent++;
         } catch (err) {
             failed++;
+            console.log(`Failed to send to ${userId}: ${err.message}`);
         }
         await new Promise(r => setTimeout(r, 50));
     }
     
-    await ctx.reply(`✅ Sent!\n\nSent: ${sent}\nFailed: ${failed}`);
+    await ctx.reply(
+        `<b>✅ Announcement Sent!</b>\n\n` +
+        `<b>📤 Sent:</b> ${sent}\n` +
+        `<b>❌ Failed:</b> ${failed}\n\n` +
+        `<b>Targeted:</b> ${announceSession.targets.length} users`,
+        { parse_mode: 'HTML' }
+    );
     
-    // Reset
-    announceSession = { active: false, targets: [], message: '', photo: null, step: null };
+    // Reset session
+    announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
+});
+
+// ============================================
+// CANCEL COMMAND
+// ============================================
+bot.command('cancel', (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return;
+    announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
+    ctx.reply('❌ Cancelled.');
+});
+
+// ============================================
+// TEST COMMAND
+// ============================================
+bot.command('test', (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+        ctx.reply('Not available');
+        return;
+    }
+    ctx.reply(`✅ Bot is working!\n\nUsers: ${users.size}\nOrders: ${pendingOrders.size}`);
 });
 
 // ============================================
@@ -526,30 +677,10 @@ bot.command('apply', (ctx) => {
     
     const valid = ['HUBBY10', 'HUBBY20', 'WELCOME', 'FIRSTBUY'];
     if (valid.includes(code.toUpperCase())) {
-        ctx.reply(`✅ Promo code ${code.toUpperCase()} applied! You get discount on first purchase.`, { parse_mode: 'HTML', ...mainMenu });
+        ctx.reply(`✅ Promo code ${code.toUpperCase()} applied!`, { parse_mode: 'HTML', ...mainMenu });
     } else {
         ctx.reply(`❌ Invalid code: ${code}`);
     }
-});
-
-// ============================================
-// CANCEL COMMAND
-// ============================================
-bot.command('cancel', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
-    announceSession = { active: false, targets: [], message: '', photo: null, step: null };
-    ctx.reply('❌ Cancelled.');
-});
-
-// ============================================
-// TEST COMMAND
-// ============================================
-bot.command('test', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) {
-        ctx.reply('Not available');
-        return;
-    }
-    ctx.reply('✅ Bot is working!');
 });
 
 // ============================================
@@ -559,9 +690,19 @@ bot.launch()
     .then(() => {
         console.log('========================================');
         console.log('✅ BOT RUNNING!');
+        console.log(`📊 Users: ${users.size}`);
+        console.log(`📊 Orders: ${pendingOrders.size}`);
         console.log('========================================');
     })
     .catch(err => console.error('Error:', err));
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+    saveUsers(users);
+    saveOrders(pendingOrders);
+    bot.stop('SIGINT');
+});
+process.once('SIGTERM', () => {
+    saveUsers(users);
+    saveOrders(pendingOrders);
+    bot.stop('SIGTERM');
+});
