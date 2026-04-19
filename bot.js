@@ -5,14 +5,16 @@ const path = require('path');
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = 1379973354;
 
-// File paths for persistent storage
+// File paths
 const USERS_FILE = path.join(__dirname, 'users.json');
+const USERS_BACKUP_FILE = path.join(__dirname, 'users.backup.json');
 const ORDERS_FILE = path.join(__dirname, 'orders.json');
 
 // ============================================
 // PERSISTENT STORAGE FUNCTIONS
 // ============================================
 function loadUsers() {
+    // Try main file first
     try {
         if (fs.existsSync(USERS_FILE)) {
             const data = fs.readFileSync(USERS_FILE, 'utf8');
@@ -21,12 +23,35 @@ function loadUsers() {
             for (const [key, value] of Object.entries(parsed)) {
                 usersMap.set(parseInt(key), value);
             }
-            console.log(`✅ Loaded ${usersMap.size} users from file`);
-            return usersMap;
+            if (usersMap.size > 0) {
+                console.log(`✅ Loaded ${usersMap.size} users from file`);
+                return usersMap;
+            }
         }
     } catch (err) {
         console.error('Error loading users:', err.message);
     }
+    
+    // Try backup file
+    try {
+        if (fs.existsSync(USERS_BACKUP_FILE)) {
+            const data = fs.readFileSync(USERS_BACKUP_FILE, 'utf8');
+            const parsed = JSON.parse(data);
+            const usersMap = new Map();
+            for (const [key, value] of Object.entries(parsed)) {
+                usersMap.set(parseInt(key), value);
+            }
+            if (usersMap.size > 0) {
+                console.log(`✅ Loaded ${usersMap.size} users from backup`);
+                saveUsers(usersMap); // Restore main file
+                return usersMap;
+            }
+        }
+    } catch (err) {
+        console.error('Error loading backup:', err.message);
+    }
+    
+    console.log('📁 No users found, starting fresh');
     return new Map();
 }
 
@@ -34,7 +59,8 @@ function saveUsers(usersMap) {
     try {
         const obj = Object.fromEntries(usersMap);
         fs.writeFileSync(USERS_FILE, JSON.stringify(obj, null, 2));
-        console.log(`✅ Saved ${usersMap.size} users to file`);
+        fs.writeFileSync(USERS_BACKUP_FILE, JSON.stringify(obj, null, 2));
+        console.log(`✅ Saved ${usersMap.size} users to file and backup`);
     } catch (err) {
         console.error('Error saving users:', err.message);
     }
@@ -135,6 +161,7 @@ const adminMenu = Markup.inlineKeyboard([
     [Markup.button.callback('👥 Show Users', 'admin_users')],
     [Markup.button.callback('📢 Announcement', 'admin_announce')],
     [Markup.button.callback('📊 Stats', 'admin_stats')],
+    [Markup.button.callback('➕ Import Users', 'admin_import')],
     [Markup.button.callback('🧪 Test', 'admin_test')]
 ]);
 
@@ -158,7 +185,7 @@ bot.start(async (ctx) => {
     
     if (userId === ADMIN_ID) {
         await ctx.reply(
-            `🔧 <b>Admin Panel</b>\n\nWelcome back, ${firstName}!\nUsers: ${users.size}\nOrders: ${pendingOrders.size}`,
+            `🔧 <b>Admin Panel</b>\n\nWelcome back, ${firstName}!\n👥 Users: ${users.size}\n📦 Orders: ${pendingOrders.size}`,
             { parse_mode: 'HTML', ...adminMenu }
         );
     } else {
@@ -167,6 +194,96 @@ bot.start(async (ctx) => {
             { parse_mode: 'HTML', ...mainMenu }
         );
     }
+});
+
+// ============================================
+// IMPORT USERS COMMAND
+// ============================================
+let importMode = false;
+let importList = [];
+
+bot.action('admin_import', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+        await ctx.answerCbQuery('Admin only');
+        return;
+    }
+    await ctx.answerCbQuery();
+    
+    importMode = true;
+    importList = [];
+    
+    await ctx.editMessageText(
+        `<b>➕ IMPORT USERS</b>\n\n` +
+        `Send me a list of user IDs, one per line:\n\n` +
+        `<code>1379973354</code>\n` +
+        `<code>1692683286</code>\n` +
+        `<code>123456789</code>\n\n` +
+        `You can also send usernames with @:\n\n` +
+        `<code>@username1</code>\n` +
+        `<code>@username2</code>\n\n` +
+        `Type /cancel to abort.`,
+        { parse_mode: 'HTML' }
+    );
+});
+
+// Handle import input
+bot.on('text', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return;
+    if (!importMode) return;
+    if (ctx.message.text === '/cancel') {
+        importMode = false;
+        importList = [];
+        await ctx.reply('❌ Import cancelled.');
+        return;
+    }
+    
+    const lines = ctx.message.text.split('\n');
+    let added = 0;
+    let skipped = 0;
+    
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        
+        let userId = null;
+        let username = null;
+        
+        // Check if it's a username with @
+        if (trimmed.startsWith('@')) {
+            username = trimmed.substring(1);
+            // We'll store as pending - user needs to start bot to get ID
+            // For now, just store username
+            continue;
+        }
+        
+        // Check if it's a numeric ID
+        if (/^\d+$/.test(trimmed)) {
+            userId = parseInt(trimmed);
+        }
+        
+        if (userId && !users.has(userId)) {
+            users.set(userId, {
+                username: null,
+                firstName: `Imported_${userId}`,
+                joined: new Date().toISOString(),
+                imported: true
+            });
+            added++;
+        } else if (userId && users.has(userId)) {
+            skipped++;
+        }
+    }
+    
+    saveUsers(users);
+    importMode = false;
+    
+    await ctx.reply(
+        `<b>✅ Import Complete!</b>\n\n` +
+        `Added: ${added} users\n` +
+        `Skipped (already exist): ${skipped}\n\n` +
+        `Total users now: ${users.size}`,
+        { parse_mode: 'HTML', ...adminMenu }
+    );
 });
 
 // ============================================
@@ -373,7 +490,7 @@ bot.action('admin_users', async (ctx) => {
     await ctx.answerCbQuery();
     
     if (users.size === 0) {
-        await ctx.reply('📊 No users in database yet.\n\nUsers appear when they send /start.');
+        await ctx.reply('📊 No users in database yet.\n\nUsers appear when they send /start or you import them.');
         return;
     }
     
@@ -416,11 +533,11 @@ bot.action('admin_test', async (ctx) => {
         return;
     }
     await ctx.answerCbQuery();
-    await ctx.reply('✅ Bot is working! Data is persistent.');
+    await ctx.reply(`✅ Bot is working!\n\nUsers in database: ${users.size}\nOrders: ${pendingOrders.size}`);
 });
 
 // ============================================
-// ANNOUNCEMENT SYSTEM (FIXED PHOTO SUPPORT)
+// ANNOUNCEMENT SYSTEM
 // ============================================
 bot.action('admin_announce', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
@@ -455,7 +572,7 @@ bot.action('announce_all', async (ctx) => {
     await ctx.answerCbQuery();
     
     if (users.size === 0) {
-        await ctx.editMessageText('❌ No users in database.');
+        await ctx.editMessageText('❌ No users in database. Use "Import Users" first.');
         announceSession.active = false;
         return;
     }
@@ -529,7 +646,7 @@ bot.on('text', async (ctx) => {
         }
         
         if (found.length === 0) {
-            await ctx.reply(`❌ No valid users found.\n\nMake sure users have started the bot with /start.\n\nTry again or /cancel`);
+            await ctx.reply(`❌ No valid users found.\n\nMake sure users have started the bot or import them first.\n\nTry again or /cancel`);
             return;
         }
         
@@ -650,6 +767,7 @@ bot.action('announce_send_msg', async (ctx) => {
 // ============================================
 bot.command('cancel', (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
+    importMode = false;
     announceSession = { active: false, targets: [], message: '', photo: null, step: null, waitingForConfirmation: false };
     ctx.reply('❌ Cancelled.');
 });
